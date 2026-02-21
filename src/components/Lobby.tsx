@@ -1,159 +1,295 @@
-import React, { useState } from 'react';
-import { useGameStore } from '../store/gameStore';
-import { VideoGrid } from './VideoGrid';
-import { networkManager } from '../network/NetworkManager';
-import { Copy, Maximize, Download } from 'lucide-react';
+import React, { useEffect, useState } from "react";
+import { useGameStore } from "../store/gameStore";
+import { VideoGrid } from "./VideoGrid";
+import { networkManager } from "../network/NetworkManager";
+import {
+  Copy,
+  Crown,
+  Maximize,
+  Download,
+  CheckCircle,
+  Circle,
+} from "lucide-react";
 
 export const Lobby: React.FC = () => {
-  const { createRoom, joinRoom, startGame, roomId, isHost, players } = useGameStore();
-  const [name, setName] = useState('');
-  const [joinCode, setJoinCode] = useState('');
-  const [mode, setMode] = useState<'menu' | 'waiting'>('menu');
+  const {
+    createRoom,
+    joinRoom,
+    startGame,
+    roomId,
+    isHost,
+    players,
+    myPlayerId,
+  } = useGameStore();
+
+  const [name, setName] = useState("");
+  const [joinCode, setJoinCode] = useState("");
+  const [mode, setMode] = useState<"menu" | "waiting">("menu");
+
+  const [ready, setReady] = useState(false);
   const [deferredPrompt, setDeferredPrompt] = useState<any>(null);
 
-  React.useEffect(() => {
+  /* ======================================================
+     PWA INSTALL
+  ====================================================== */
+
+  useEffect(() => {
     const handler = (e: any) => {
       e.preventDefault();
       setDeferredPrompt(e);
     };
-    window.addEventListener('beforeinstallprompt', handler);
-    return () => window.removeEventListener('beforeinstallprompt', handler);
+
+    window.addEventListener("beforeinstallprompt", handler);
+
+    return () => {
+      window.removeEventListener("beforeinstallprompt", handler);
+    };
   }, []);
 
   const handleInstall = async () => {
-    if (deferredPrompt) {
-      deferredPrompt.prompt();
-      const { outcome } = await deferredPrompt.userChoice;
-      if (outcome === 'accepted') {
-        setDeferredPrompt(null);
-      }
-    } else {
-        alert("To install: Tap 'Share' then 'Add to Home Screen' (iOS) or use the browser menu (Android).");
+    if (!deferredPrompt) {
+      alert(
+        "To install: Tap Share → Add to Home Screen (iOS) or use browser menu (Android)."
+      );
+      return;
     }
+
+    deferredPrompt.prompt();
+    await deferredPrompt.userChoice;
+    setDeferredPrompt(null);
   };
+
+  /* ======================================================
+     UI HELPERS
+  ====================================================== */
 
   const toggleFullscreen = () => {
     if (!document.fullscreenElement) {
-        document.documentElement.requestFullscreen().catch(err => {
-            console.error(`Error attempting to enable fullscreen: ${err.message}`);
-        });
+      document.documentElement.requestFullscreen();
     } else {
-        if (document.exitFullscreen) {
-            document.exitFullscreen();
-        }
+      document.exitFullscreen?.();
     }
-  };
-
-  const handleCreate = async () => {
-    if (!name) return;
-    await networkManager.startLocalStream();
-    await createRoom(name);
-    setMode('waiting');
-  };
-
-  const handleJoin = async () => {
-    if (!name || !joinCode) return;
-    await networkManager.startLocalStream();
-    await joinRoom(joinCode, name);
-    setMode('waiting');
   };
 
   const copyCode = () => {
     navigator.clipboard.writeText(roomId);
-    alert('Room code copied!');
+    alert("Room code copied");
   };
 
-  if (mode === 'waiting') {
+  const allReady =
+    players.length >= 2 && players.every((p) => p.ready);
+
+  /* ======================================================
+     JOIN / CREATE
+  ====================================================== */
+
+  const handleCreate = async () => {
+    if (!name) return;
+
+    await networkManager.startLocalStream();
+    await createRoom(name);
+
+    setReady(true);
+    setMode("waiting");
+  };
+
+  const handleJoin = async () => {
+    if (!name || !joinCode) return;
+
+    await networkManager.startLocalStream();
+    await joinRoom(joinCode, name);
+
+    setReady(true);
+    setMode("waiting");
+  };
+
+  const toggleReady = () => {
+    setReady((r) => !r);
+
+    // For now local only — later we sync
+    const store = useGameStore.getState();
+
+    const updated = store.players.map((p) =>
+      p.id === myPlayerId ? { ...p, ready: !ready } : p
+    );
+
+    useGameStore.setState({ players: updated });
+  };
+
+  /* ======================================================
+     WAITING ROOM
+  ====================================================== */
+
+  if (mode === "waiting") {
     return (
-      <div className="flex flex-col h-screen bg-slate-900 text-white p-4">
-        <header className="flex justify-between items-center mb-4">
-           <h1 className="text-xl font-bold">Lobby</h1>
-           <div className="flex items-center space-x-2">
-             <div className="flex items-center space-x-2 bg-slate-800 px-3 py-1 rounded-full cursor-pointer" onClick={copyCode}>
-               <span className="font-mono text-sm">{roomId}</span>
-               <Copy size={14} />
-             </div>
-             <button onClick={toggleFullscreen} className="p-2 bg-slate-800 rounded-full text-slate-400 hover:text-white">
-               <Maximize size={16} />
-             </button>
-           </div>
+      <div className="flex flex-col h-screen bg-black text-white p-3">
+
+        {/* HEADER */}
+        <header className="flex justify-between items-center mb-2">
+
+          <div className="font-extrabold tracking-tight text-green-400">
+            KAD Lobby
+          </div>
+
+          <div className="flex items-center gap-2">
+
+            <button
+              onClick={copyCode}
+              className="flex items-center gap-1 bg-neutral-800 px-3 py-1 rounded-full text-xs"
+            >
+              <span className="font-mono">{roomId}</span>
+              <Copy size={12} />
+            </button>
+
+            <button
+              onClick={toggleFullscreen}
+              className="p-2 bg-neutral-800 rounded-full"
+            >
+              <Maximize size={14} />
+            </button>
+
+          </div>
         </header>
-        
-        <div className="flex-1 bg-slate-800 rounded-xl overflow-hidden mb-4">
-           <VideoGrid />
+
+        {/* VIDEO */}
+        <div className="flex-1 bg-neutral-900 rounded-xl overflow-hidden mb-2">
+          <VideoGrid />
         </div>
-        
-        <div className="space-y-4">
-           <div className="text-center text-slate-400">
-             {players.length} players ready
-           </div>
-           
-           {isHost ? (
-             <button 
-               onClick={startGame}
-               className="w-full bg-indigo-600 py-4 rounded-xl font-bold text-lg hover:bg-indigo-700 transition-colors"
-             >
-               Start Game
-             </button>
-           ) : (
-             <div className="text-center text-indigo-400 font-medium py-4">
-               Waiting for host to start...
-             </div>
-           )}
+
+        {/* PLAYER LIST */}
+        <div className="bg-neutral-900 rounded-xl p-3 mb-2 space-y-1">
+
+          {players.map((p) => (
+            <div
+              key={p.id}
+              className="flex items-center justify-between text-sm"
+            >
+              <div className="flex items-center gap-2">
+
+                {p.isHost && (
+                  <Crown size={14} className="text-yellow-400" />
+                )}
+
+                <span className="font-medium">{p.name}</span>
+              </div>
+
+              {p.ready ? (
+                <CheckCircle size={16} className="text-green-400" />
+              ) : (
+                <Circle size={16} className="text-neutral-500" />
+              )}
+            </div>
+          ))}
+        </div>
+
+        {/* CONTROLS */}
+        <div className="space-y-2">
+
+          <button
+            onClick={toggleReady}
+            className={`w-full py-3 rounded-xl font-bold ${
+              ready
+                ? "bg-neutral-700"
+                : "bg-green-500 text-black"
+            }`}
+          >
+            {ready ? "NOT READY" : "READY UP"}
+          </button>
+
+          {isHost ? (
+            <button
+              onClick={startGame}
+              disabled={!allReady}
+              className="w-full py-3 rounded-xl font-extrabold bg-green-600 disabled:bg-neutral-700 disabled:text-neutral-400"
+            >
+              START GAME
+            </button>
+          ) : (
+            <div className="text-center text-xs text-neutral-400 py-1">
+              Waiting for host…
+            </div>
+          )}
         </div>
       </div>
     );
   }
 
+  /* ======================================================
+     MENU
+  ====================================================== */
+
   return (
-    <div className="flex flex-col h-screen items-center justify-center bg-slate-900 p-6 space-y-8 relative">
-      <div className="absolute top-4 right-4 flex space-x-2">
-         <button onClick={handleInstall} className="p-3 bg-slate-800 rounded-full text-indigo-400 hover:text-indigo-300 hover:bg-slate-700 transition-colors">
-            <Download size={20} />
-         </button>
-         <button onClick={toggleFullscreen} className="p-3 bg-slate-800 rounded-full text-slate-400 hover:text-white hover:bg-slate-700 transition-colors">
-            <Maximize size={20} />
-         </button>
+    <div className="flex flex-col h-screen items-center justify-center bg-black p-6 space-y-6 relative">
+
+      {/* TOP BUTTONS */}
+      <div className="absolute top-4 right-4 flex gap-2">
+
+        <button
+          onClick={handleInstall}
+          className="p-3 bg-neutral-800 rounded-full text-green-400"
+        >
+          <Download size={18} />
+        </button>
+
+        <button
+          onClick={toggleFullscreen}
+          className="p-3 bg-neutral-800 rounded-full"
+        >
+          <Maximize size={18} />
+        </button>
+
       </div>
-      <div className="text-center space-y-2">
-        <h1 className="text-5xl font-black text-indigo-500 tracking-tighter">KAD KINGS</h1>
-        <p className="text-slate-400">The Ultimate Drinking Game</p>
+
+      {/* TITLE */}
+      <div className="text-center space-y-1">
+
+        <h1 className="text-4xl font-black text-green-400 tracking-tight">
+          KAD KINGS
+        </h1>
+
+        <p className="text-neutral-400 text-sm">
+          Multiplayer drinking chaos
+        </p>
+
       </div>
-      
-      <div className="w-full max-w-sm space-y-4">
+
+      {/* FORM */}
+      <div className="w-full max-w-sm space-y-3">
+
         <input
           type="text"
-          placeholder="Enter your name"
+          placeholder="Your name"
           value={name}
-          onChange={e => setName(e.target.value)}
-          className="w-full bg-slate-800 text-white p-4 rounded-xl border border-slate-700 focus:border-indigo-500 outline-none transition-all"
+          onChange={(e) => setName(e.target.value)}
+          className="w-full bg-neutral-900 text-white p-3 rounded-xl border border-neutral-700 focus:border-green-500 outline-none"
         />
-        
-        <div className="grid grid-cols-2 gap-4">
-          <button 
-            onClick={handleCreate}
-            disabled={!name}
-            className="bg-indigo-600 text-white p-4 rounded-xl font-bold hover:bg-indigo-700 disabled:opacity-50 transition-colors"
+
+        <button
+          onClick={handleCreate}
+          disabled={!name}
+          className="w-full bg-green-500 text-black p-3 rounded-xl font-bold disabled:opacity-50"
+        >
+          Create Room
+        </button>
+
+        <div className="space-y-2">
+
+          <input
+            type="text"
+            placeholder="Room Code"
+            value={joinCode}
+            onChange={(e) => setJoinCode(e.target.value)}
+            className="w-full bg-neutral-900 text-white p-2 rounded-lg border border-neutral-700 text-center text-sm"
+          />
+
+          <button
+            onClick={handleJoin}
+            disabled={!name || !joinCode}
+            className="w-full bg-neutral-800 p-2 rounded-lg font-bold text-sm disabled:opacity-50"
           >
-            Create Room
+            Join Room
           </button>
-          
-          <div className="space-y-2">
-             <input
-               type="text"
-               placeholder="Room Code"
-               value={joinCode}
-               onChange={e => setJoinCode(e.target.value)}
-               className="w-full bg-slate-800 text-white p-2 rounded-lg border border-slate-700 text-center text-sm"
-             />
-             <button 
-               onClick={handleJoin}
-               disabled={!name || !joinCode}
-               className="w-full bg-slate-700 text-white p-2 rounded-lg font-bold hover:bg-slate-600 disabled:opacity-50 transition-colors text-sm"
-             >
-               Join Room
-             </button>
-          </div>
+
         </div>
       </div>
     </div>
