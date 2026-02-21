@@ -44,30 +44,37 @@ export class NetworkManager {
   ====================================================== */
 
   async initialize(requestedId?: string): Promise<string> {
-    return new Promise((resolve) => {
-      if (requestedId) {
-        this.peer = new Peer(requestedId);
-      } else {
-        this.peer = new Peer();
+    return new Promise((resolve, reject) => {
+      try {
+        this.peer = new Peer(requestedId, {
+          host: "peerjs-server.herokuapp.com",
+          secure: true,
+          port: 443,
+          path: "/",
+        });
+
+        this.peer.on("open", (id) => {
+          this.myPeerId = id;
+          console.log("PeerJS ready:", id);
+          resolve(id);
+        });
+
+        this.peer.on("connection", (conn) => {
+          this.handleConnection(conn);
+        });
+
+        this.peer.on("call", (call) => {
+          this.handleCall(call);
+        });
+
+        this.peer.on("error", (err) => {
+          console.error("PeerJS error:", err);
+          reject(err);
+        });
+      } catch (err) {
+        console.error("Peer init failed:", err);
+        reject(err);
       }
-
-      this.peer.on("open", (id) => {
-        this.myPeerId = id;
-        console.log("PeerJS ready:", id);
-        resolve(id);
-      });
-
-      this.peer.on("connection", (conn) => {
-        this.handleConnection(conn);
-      });
-
-      this.peer.on("call", (call) => {
-        this.handleCall(call);
-      });
-
-      this.peer.on("error", (err) => {
-        console.error("PeerJS error:", err);
-      });
     });
   }
 
@@ -109,7 +116,6 @@ export class NetworkManager {
     conn.on("data", (data) => {
       const msg = data as NetworkMessage;
 
-      // Fan out to listeners
       this.messageHandlers.forEach((h) => {
         try {
           h(msg, conn.peer);
