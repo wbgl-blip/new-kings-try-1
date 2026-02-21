@@ -11,6 +11,7 @@ import { MatePicker } from "./MatePicker";
 import { TurnGameOverlay } from "./TurnGameOverlay";
 import { GotchaModal } from "./GotchaModal";
 import { SmokoModal } from "./SmokoModal";
+import { ReactionOverlay } from "./ReactionOverlay";
 
 import { motion, AnimatePresence } from "framer-motion";
 import { List, ShieldAlert, Maximize, Power } from "lucide-react";
@@ -319,6 +320,7 @@ export const Game: React.FC = () => {
       <TurnGameOverlay />
       <GotchaModal />
       <SmokoModal />
+      <ReactionOverlay />
 
     </div>
   );
