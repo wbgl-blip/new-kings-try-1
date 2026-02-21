@@ -1,11 +1,4 @@
-/* src/types.ts */
-
-/* ======================================================
-   CARDS
-====================================================== */
-
 export type Suit = "hearts" | "diamonds" | "clubs" | "spades";
-
 export type Rank =
   | "A"
   | "2"
@@ -25,77 +18,47 @@ export interface Card {
   id: string;
   suit: Suit;
   rank: Rank;
-
   text: string;
   ruleTitle: string;
 }
 
-/* ======================================================
-   PLAYERS
-====================================================== */
-
 export interface Player {
   id: string;
   name: string;
-
-  peerId: string;
-
   isHost: boolean;
-  ready: boolean;
+  peerId: string; // PeerJS ID
 
+  ready: boolean;
   drinks: number;
 
-  /* Powers */
   isQuestionMaster: boolean;
   hasThumbMaster: boolean;
   hasHeaven: boolean;
 
-  /* Mate (8) */
+  // 8 = Mate (we’ll implement later, but 2 already enforces it if present)
   mateId?: string;
 
-  /* Media (local only) */
-  stream?: MediaStream;
+  stream?: MediaStream; // Local only, not synced
   cameraEnabled: boolean;
   micEnabled: boolean;
   activeSpeaker: boolean;
 
-  /* Reactions */
   lastReactionTime?: number;
 }
 
-/* ======================================================
-   GAME FLOW
-====================================================== */
-
-export type GamePhase =
-  | "lobby"
-  | "playing"
-  | "paused"
-  | "gameover";
-
-/* ======================================================
-   RULES
-====================================================== */
+export type GamePhase = "lobby" | "playing" | "paused" | "gameover";
 
 export interface Rule {
   id: string;
   text: string;
-  createdBy: string;
+  createdBy: string; // Player ID
 }
-
-/* ======================================================
-   REACTIONS
-====================================================== */
 
 export interface ReactionResult {
   playerId: string;
   time: number;
   rank: number;
 }
-
-/* ======================================================
-   STATS
-====================================================== */
 
 export interface GameStats {
   totalDrinks: number;
@@ -105,105 +68,61 @@ export interface GameStats {
 }
 
 /* ======================================================
-   WATERFALL (ACE)
+   CARD 2 TARGETING
 ====================================================== */
 
-export type WaterfallStatus =
-  | "idle"
-  | "waiting"
-  | "running"
-  | "stopping";
+export type TargetingStatus = "idle" | "select" | "confirm";
+export type TargetingType = "YOU";
 
-export interface WaterfallState {
-  status: WaterfallStatus;
+export interface TargetingState {
+  status: TargetingStatus;
+  type?: TargetingType;
 
-  startedBy?: string;
+  fromPlayerId?: string; // drawer
+  targetPlayerId?: string; // selected target
 
-  duration?: number;
-  startTime?: number;
-
-  earlyStoppers: string[];
-  finished: string[];
+  // turn continues after resolution
+  nextPlayerIndex?: number;
 }
-
-/* ======================================================
-   GAME STATE
-====================================================== */
 
 export interface GameState {
   roomId: string;
-
   players: Player[];
-
-  /* Cards */
   deck: Card[];
   discardPile: Card[];
   activeCard: Card | null;
 
-  /* Flow */
   phase: GamePhase;
 
   currentPlayerIndex: number;
-  turnDirection: 1 | -1;
-
   kingsCount: number;
-
-  /* Rules */
   rules: Rule[];
 
-  /* Reactions */
   lastReactionStart?: number;
   reactionResults: ReactionResult[];
 
-  /* Power Owners */
   thumbMasterId?: string;
   questionMasterId?: string;
   heavenHolderId?: string;
 
-  /* Mate Links */
-  mates: Record<string, string>; // playerId -> mateId
-
-  /* Stats */
   stats: GameStats;
 
-  /* Outcomes */
-  winnerId?: string;
-  loserId?: string;
+  turnDirection: 1 | -1; // 1 for clockwise
 
-  /* Effects */
-  waterfall: WaterfallState;
+  winnerId?: string;
+  loserId?: string; // For reaction game
+
+  // NEW: targeting state (Card 2)
+  targeting: TargetingState;
 }
 
-/* ======================================================
-   NETWORK
-====================================================== */
-
 export type NetworkMessage =
-  | {
-      type: "SYNC_STATE";
-      state: Partial<GameState>;
-    }
-  | {
-      type: "PLAYER_JOIN";
-      player: Omit<Player, "stream">;
-    }
-  | {
-      type: "PLAYER_LEAVE";
-      playerId: string;
-    }
-  | {
-      type: "KICK_PLAYER";
-      playerId: string;
-    }
-  | {
-      type: "HOST_MIGRATE";
-      newHostId: string;
-    }
-  | {
-      type: "REACTION_TAP";
-      playerId: string;
-      time: number;
-    }
+  | { type: "SYNC_STATE"; state: Partial<GameState> }
+  | { type: "PLAYER_JOIN"; player: Omit<Player, "stream"> }
+  | { type: "PLAYER_LEAVE"; playerId: string }
+  | { type: "KICK_PLAYER"; playerId: string }
+  | { type: "HOST_MIGRATE"; newHostId: string }
+  | { type: "REACTION_TAP"; playerId: string; time: number }
   | {
       type: "MEDIA_STATE";
       playerId: string;
@@ -215,15 +134,18 @@ export type NetworkMessage =
       message: string;
       variant?: "info" | "error" | "success";
     }
+  | { type: "DRAW_REQUEST"; playerId: string }
+  // NEW: Targeting messages (Card 2)
   | {
-      type: "DRAW_REQUEST";
-      playerId: string;
+      type: "TARGET_SET";
+      fromPlayerId: string;
+      targetPlayerId: string;
     }
   | {
-      type: "PLAYER_READY";
-      playerId: string;
-      ready: boolean;
+      type: "TARGET_CONFIRM";
+      fromPlayerId: string;
     }
   | {
-      type: "REQUEST_SYNC";
+      type: "TARGET_CANCEL";
+      fromPlayerId: string;
     };
