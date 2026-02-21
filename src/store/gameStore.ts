@@ -1,9 +1,9 @@
-import { create } from 'zustand';
-import { v4 as uuidv4 } from 'uuid';
+import { create } from "zustand";
+import { v4 as uuidv4 } from "uuid";
 
-import { GameState, Player, GameStats, Rank } from '../types';
-import { generateDeck } from '../constants';
-import { networkManager } from '../network/NetworkManager';
+import { GameState, Player, GameStats, Rank } from "../types";
+import { generateDeck } from "../constants";
+import { networkManager } from "../network/NetworkManager";
 
 /* ======================================================
    TYPES
@@ -16,6 +16,9 @@ interface GameStore extends GameState {
   /* Room */
   createRoom: (name: string) => Promise<string>;
   joinRoom: (roomId: string, name: string) => Promise<void>;
+
+  /* Lobby */
+  setMyReady: (ready: boolean) => void;
 
   /* Flow */
   startGame: () => void;
@@ -55,13 +58,13 @@ const INITIAL_STATS: GameStats = {
 };
 
 const INITIAL_STATE: GameState = {
-  roomId: '',
+  roomId: "",
   players: [],
   deck: [],
   discardPile: [],
   activeCard: null,
 
-  phase: 'lobby',
+  phase: "lobby",
 
   currentPlayerIndex: 0,
   turnDirection: 1,
@@ -85,7 +88,7 @@ const INITIAL_STATE: GameState = {
 export const useGameStore = create<GameStore>((set, get) => ({
   ...INITIAL_STATE,
 
-  myPlayerId: '',
+  myPlayerId: "",
   isHost: false,
 
   /* ======================================================
@@ -124,44 +127,63 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     /* Host listens for all messages */
-    networkManager.onMessage((msg, senderId) => {
+    networkManager.onMessage((msg, senderPeerId) => {
       const state = get();
       if (!state.isHost) return;
 
       switch (msg.type) {
-        case 'PLAYER_JOIN': {
+        case "PLAYER_JOIN": {
+          // Avoid duplicates (refresh / reconnect edge cases)
+          const exists = state.players.some((p) => p.id === msg.player.id);
+          if (exists) {
+            // Still sync current state to that peer
+            broadcastStateSnapshot();
+            return;
+          }
+
           const newPlayer: Player = {
             ...msg.player,
-            peerId: senderId,
+            peerId: senderPeerId,
           };
 
           const players = [...state.players, newPlayer];
-
           set({ players });
-          syncState({ players });
 
-          break;
+          broadcastStateSnapshot();
+          return;
         }
 
-        case 'DRAW_REQUEST': {
-          if (state.phase !== 'playing') return;
+        case "PLAYER_READY": {
+          const { playerId, ready } = msg;
 
-          const current =
-            state.players[state.currentPlayerIndex];
+          const players = state.players.map((p) =>
+            p.id === playerId ? { ...p, ready: !!ready } : p
+          );
 
+          set({ players });
+          broadcastStateSnapshot();
+          return;
+        }
+
+        case "DRAW_REQUEST": {
+          if (state.phase !== "playing") return;
+
+          const current = state.players[state.currentPlayerIndex];
           if (current?.id === msg.playerId) {
             get().drawCard();
           }
-
-          break;
+          return;
         }
 
-        case 'REACTION_TAP': {
+        case "REACTION_TAP": {
           handleReactionTap(msg);
-          break;
+          return;
         }
       }
     });
+
+    // Host immediately broadcasts initial snapshot (helps late listeners)
+    broadcastStateSnapshot();
 
     return peerId;
   },
@@ -179,7 +201,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     await networkManager.connectToHost(roomId);
 
     networkManager.sendToHost({
-      type: 'PLAYER_JOIN',
+      type: "PLAYER_JOIN",
       player: {
         id,
         name,
@@ -201,20 +223,49 @@ export const useGameStore = create<GameStore>((set, get) => ({
     });
 
     networkManager.onMessage((msg) => {
-      if (msg.type === 'SYNC_STATE') {
+      if (msg.type === "SYNC_STATE") {
         get().receiveState(msg.state);
       }
 
-      if (msg.type === 'KICK_PLAYER') {
+      if (msg.type === "KICK_PLAYER") {
         if (msg.playerId === get().myPlayerId) {
           window.location.reload();
         }
       }
     });
+
+    // Ask host for snapshot (in case join races listener timing)
+    networkManager.sendToHost({ type: "REQUEST_SYNC" });
   },
 
   receiveState: (state) => {
     set((s) => ({ ...s, ...state }));
+  },
+
+  /* ======================================================
+     LOBBY
+  ====================================================== */
+
+  setMyReady: (ready) => {
+    const state = get();
+
+    // Host updates locally and rebroadcasts
+    if (state.isHost) {
+      const players = state.players.map((p) =>
+        p.id === state.myPlayerId ? { ...p, ready: !!ready } : p
+      );
+
+      set({ players });
+      broadcastStateSnapshot();
+      return;
+    }
+
+    // Client requests host update
+    networkManager.sendToHost({
+      type: "PLAYER_READY",
+      playerId: state.myPlayerId,
+      ready: !!ready,
+    });
   },
 
   /* ======================================================
@@ -226,10 +277,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!state.isHost) return;
 
     const next: Partial<GameState> = {
-      phase: 'playing',
+      phase: "playing",
 
       deck: generateDeck(),
       discardPile: [],
+      activeCard: null,
 
       currentPlayerIndex: 0,
       kingsCount: 0,
@@ -242,7 +294,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     };
 
     set(next);
-    syncState(next);
+    broadcastStateSnapshot();
   },
 
   resetGame: () => {
@@ -252,11 +304,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const next: Partial<GameState> = {
       ...INITIAL_STATE,
       roomId: state.roomId,
-      players: state.players,
+      players: state.players.map((p) => ({
+        ...p,
+        // Reset per-round toggles cleanly
+        drinks: 0,
+        isQuestionMaster: false,
+        hasThumbMaster: false,
+        hasHeaven: false,
+      })),
     };
 
     set(next);
-    syncState(next);
+    broadcastStateSnapshot();
   },
 
   /* ======================================================
@@ -269,10 +328,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
     /* Client → Host */
     if (!state.isHost) {
       networkManager.sendToHost({
-        type: 'DRAW_REQUEST',
+        type: "DRAW_REQUEST",
         playerId: state.myPlayerId,
       });
-
       return;
     }
 
@@ -280,67 +338,59 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     const card = state.deck[0];
     const deck = state.deck.slice(1);
-    const discard = [card, ...state.discardPile];
+    const discardPile = [card, ...state.discardPile];
 
     let players = [...state.players];
 
-    let kings = state.kingsCount;
+    let kingsCount = state.kingsCount;
     let phase = state.phase;
 
-    let thumb = state.thumbMasterId;
-    let question = state.questionMasterId;
+    let thumbMasterId = state.thumbMasterId;
+    let questionMasterId = state.questionMasterId;
 
     const current = players[state.currentPlayerIndex];
 
-    /* Rules */
     const r: Rank = card.rank;
 
-    if (r === 'K') {
-      kings++;
-
-      if (kings >= 4) {
-        phase = 'gameover';
-      }
+    if (r === "K") {
+      kingsCount += 1;
+      if (kingsCount >= 4) phase = "gameover";
     }
 
-    if (r === '7') {
+    if (r === "7") {
       players.forEach((p) => (p.hasHeaven = false));
       current.hasHeaven = true;
     }
 
-    if (r === 'J') {
+    if (r === "J") {
       players.forEach((p) => (p.hasThumbMaster = false));
       current.hasThumbMaster = true;
-      thumb = current.id;
+      thumbMasterId = current.id;
     }
 
-    if (r === 'Q') {
+    if (r === "Q") {
       players.forEach((p) => (p.isQuestionMaster = false));
       current.isQuestionMaster = true;
-      question = current.id;
+      questionMasterId = current.id;
     }
 
     const nextIndex =
-      (state.currentPlayerIndex +
-        state.turnDirection +
-        players.length) %
+      (state.currentPlayerIndex + state.turnDirection + players.length) %
       players.length;
 
     const next: Partial<GameState> = {
       deck,
-      discardPile: discard,
-
+      discardPile,
       activeCard: card,
 
+      players,
       currentPlayerIndex: nextIndex,
 
-      kingsCount: kings,
+      kingsCount,
       phase,
 
-      players,
-
-      thumbMasterId: thumb,
-      questionMasterId: question,
+      thumbMasterId,
+      questionMasterId,
 
       stats: {
         ...state.stats,
@@ -349,7 +399,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     };
 
     set(next);
-    syncState(next);
+    broadcastStateSnapshot();
   },
 
   /* ======================================================
@@ -362,36 +412,34 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     const now = Date.now();
 
-    const next = {
+    set({
       lastReactionStart: now,
       reactionResults: [],
-    };
+      stats: {
+        ...state.stats,
+        reactionsTriggered: state.stats.reactionsTriggered + 1,
+      },
+    });
 
-    set(next);
-    syncState(next);
+    broadcastStateSnapshot();
   },
 
   tapReaction: () => {
     const state = get();
-
     if (!state.lastReactionStart) return;
 
     const time = Date.now();
 
     if (!state.isHost) {
       networkManager.sendToHost({
-        type: 'REACTION_TAP',
+        type: "REACTION_TAP",
         playerId: state.myPlayerId,
         time,
       });
-
       return;
     }
 
-    handleReactionTap({
-      playerId: state.myPlayerId,
-      time,
-    });
+    handleReactionTap({ playerId: state.myPlayerId, time });
   },
 
   resolveReaction: () => {
@@ -399,13 +447,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (!state.isHost) return;
 
     setTimeout(() => {
-      const next = {
+      set({
         lastReactionStart: undefined,
         reactionResults: [],
-      };
+      });
 
-      set(next);
-      syncState(next);
+      broadcastStateSnapshot();
     }, 2500);
   },
 
@@ -413,14 +460,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
      MODIFIERS
   ====================================================== */
 
-  updatePlayerStats: (id, drinks) => {
+  updatePlayerStats: (playerId, drinks) => {
     const state = get();
     if (!state.isHost) return;
 
     const players = state.players.map((p) =>
-      p.id === id
-        ? { ...p, drinks: p.drinks + drinks }
-        : p
+      p.id === playerId ? { ...p, drinks: p.drinks + drinks } : p
     );
 
     const stats = {
@@ -429,7 +474,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     };
 
     set({ players, stats });
-    syncState({ players, stats });
+    broadcastStateSnapshot();
   },
 
   makeRule: (text) => {
@@ -439,15 +484,13 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const rule = {
       id: uuidv4(),
       text,
-      createdBy:
-        state.players[state.currentPlayerIndex]?.id ??
-        'host',
+      createdBy: state.players[state.currentPlayerIndex]?.id ?? "host",
     };
 
     const rules = [...state.rules, rule];
 
     set({ rules });
-    syncState({ rules });
+    broadcastStateSnapshot();
   },
 
   setQuestionMaster: (id) => {
@@ -460,7 +503,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }));
 
     set({ players, questionMasterId: id });
-    syncState({ players, questionMasterId: id });
+    broadcastStateSnapshot();
   },
 
   setThumbMaster: (id) => {
@@ -473,7 +516,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     }));
 
     set({ players, thumbMasterId: id });
-    syncState({ players, thumbMasterId: id });
+    broadcastStateSnapshot();
   },
 
   /* ======================================================
@@ -484,41 +527,69 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const state = get();
     if (!state.isHost) return;
 
-    const players = state.players.filter(
-      (p) => p.id !== id
-    );
+    const players = state.players.filter((p) => p.id !== id);
 
     set({ players });
-
-    syncState({ players });
+    broadcastStateSnapshot();
 
     networkManager.broadcast({
-      type: 'KICK_PLAYER',
+      type: "KICK_PLAYER",
       playerId: id,
     });
   },
 }));
 
 /* ======================================================
-   HELPERS
+   SYNC HELPERS (CRITICAL: NO ACTIONS!)
 ====================================================== */
 
-function syncState(state: Partial<GameState>) {
-  const full = { ...useGameStore.getState(), ...state };
+function snapshotGameState(): GameState {
+  const s = useGameStore.getState();
+
+  // IMPORTANT: only GameState fields, never Zustand actions/functions.
+  return {
+    roomId: s.roomId,
+    players: s.players,
+
+    deck: s.deck,
+    discardPile: s.discardPile,
+    activeCard: s.activeCard,
+
+    phase: s.phase,
+
+    currentPlayerIndex: s.currentPlayerIndex,
+    turnDirection: s.turnDirection,
+
+    kingsCount: s.kingsCount,
+
+    rules: s.rules,
+
+    reactionResults: s.reactionResults,
+    lastReactionStart: s.lastReactionStart,
+
+    stats: s.stats,
+
+    thumbMasterId: s.thumbMasterId,
+    questionMasterId: s.questionMasterId,
+  };
+}
+
+function broadcastStateSnapshot() {
+  const state = snapshotGameState();
 
   networkManager.broadcast({
-    type: 'SYNC_STATE',
-    state: full,
+    type: "SYNC_STATE",
+    state,
   });
 }
 
-function handleReactionTap(msg: {
-  playerId: string;
-  time: number;
-}) {
+function handleReactionTap(msg: { playerId: string; time: number }) {
   const state = useGameStore.getState();
-
+  if (!state.isHost) return;
   if (!state.lastReactionStart) return;
+
+  // Prevent double taps for the same player
+  if (state.reactionResults.some((r) => r.playerId === msg.playerId)) return;
 
   const diff = msg.time - state.lastReactionStart;
 
@@ -534,13 +605,10 @@ function handleReactionTap(msg: {
 
   results.forEach((r, i) => (r.rank = i + 1));
 
-  useGameStore.setState({
-    reactionResults: results,
-  });
-
-  syncState({ reactionResults: results });
+  useGameStore.setState({ reactionResults: results });
+  broadcastStateSnapshot();
 
   if (results.length === state.players.length) {
     useGameStore.getState().resolveReaction();
   }
-}
+     }
