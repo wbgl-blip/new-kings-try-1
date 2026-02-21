@@ -48,9 +48,9 @@ export class NetworkManager {
       try {
         this.peer = new Peer(requestedId, {
           host: "peerjs-server.herokuapp.com",
-          secure: true,
           port: 443,
-          path: "/",
+          secure: true,
+          path: "/peerjs",
         });
 
         this.peer.on("open", (id) => {
