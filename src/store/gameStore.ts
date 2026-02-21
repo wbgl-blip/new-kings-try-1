@@ -33,9 +33,7 @@ function generateDeck(): Card[] {
         id: uuidv4(),
         suit: s,
         rank: r,
-        // Your Card type might include text/ruleTitle in some versions.
-        // We keep only what YOU were generating here, since Card.tsx likely renders suit/rank.
-      } as Card);
+      });
     }
   }
 
@@ -44,11 +42,12 @@ function generateDeck(): Card[] {
 
 /* ======================================================
    DRINK ENGINE (MATE GRAPH)
+   - Directed mates
+   - Chains stack, but never infinite loop (visited set)
 ====================================================== */
 
 function applyDrinkChain(state: GameState, startId: string, visited = new Set<string>()) {
   if (visited.has(startId)) return;
-
   visited.add(startId);
 
   const player = state.players.find((p) => p.id === startId);
@@ -58,13 +57,13 @@ function applyDrinkChain(state: GameState, startId: string, visited = new Set<st
   state.stats.totalDrinks += 1;
 
   const mates = player.mateIds ?? [];
-  for (const mate of mates) {
-    applyDrinkChain(state, mate, visited);
+  for (const mateId of mates) {
+    applyDrinkChain(state, mateId, visited);
   }
 }
 
 /* ======================================================
-   RULE POOL
+   RULE POOL (placeholder - expand later)
 ====================================================== */
 
 const MASTER_RULE_POOL: Rule[] = [
@@ -78,7 +77,6 @@ const MASTER_RULE_POOL: Rule[] = [
   { id: "8", title: "No Point", text: "No pointing" },
   { id: "9", title: "Narrate", text: "Narrate drinks" },
   { id: "10", title: "Cheers", text: "Cheers every sip" },
-  // Add more later
 ];
 
 /* ======================================================
@@ -92,7 +90,6 @@ const INITIAL_STATE: GameState = {
 
   deck: [],
   discardPile: [],
-
   activeCard: null,
 
   phase: "lobby",
@@ -105,12 +102,12 @@ const INITIAL_STATE: GameState = {
   rules: [],
   availableRulePool: [],
 
-  // Reaction
+  /* Reaction */
   reactionResults: [],
   lastReactionStart: undefined,
   reactionStarterId: undefined,
 
-  // Turn game
+  /* Turn Game */
   turnGame: {
     active: false,
     mode: "rhyme",
@@ -119,10 +116,18 @@ const INITIAL_STATE: GameState = {
     deadline: 0,
   },
 
-  // Smoko
+  /* Smoko */
   smokoUntil: undefined,
-  smokoCallerId: undefined,
+  smokoById: undefined,
 
+  /* Results */
+  winnerId: undefined,
+  loserId: undefined,
+
+  /* Question Master */
+  questionMasterId: undefined,
+
+  /* Stats */
   stats: {
     totalDrinks: 0,
     cardsDrawn: 0,
@@ -132,7 +137,7 @@ const INITIAL_STATE: GameState = {
 };
 
 /* ======================================================
-   STORE
+   STORE TYPES
 ====================================================== */
 
 interface GameStore extends GameState {
@@ -140,7 +145,7 @@ interface GameStore extends GameState {
   isHost: boolean;
 
   createRoom(name: string): Promise<string>;
-  joinRoom(id: string, name: string): Promise<void>;
+  joinRoom(roomId: string, name: string): Promise<void>;
 
   startGame(): void;
 
@@ -175,12 +180,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
   isHost: false,
 
   /* ======================================================
-     NETWORK
+     NETWORK APPLY (SYNC_STATE)
   ====================================================== */
 
-  receiveState: (s) => {
-    // Clients + host can apply SYNC_STATE patches, but only host broadcasts.
-    set((st) => ({ ...st, ...s }));
+  receiveState: (patch) => {
+    set((st) => ({ ...st, ...patch }));
   },
 
   /* ======================================================
@@ -227,11 +231,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       availableRulePool: rulePool,
     });
 
-    // Host handles inputs and broadcasts SYNC_STATE
+    // Host message router
     networkManager.onMessage((msg: any, senderPeerId?: string) => {
       const state = get();
+
+      // Clients only apply SYNC_STATE and handle kick
       if (!state.isHost) {
-        // Clients only apply SYNC_STATE; they do NOT process inputs.
         if (msg?.type === "SYNC_STATE") get().receiveState(msg.state);
         if (msg?.type === "KICK_PLAYER" && msg.playerId === get().myPlayerId) {
           window.location.reload();
@@ -243,7 +248,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
         case "PLAYER_JOIN": {
           const incoming: Player = msg.player;
 
-          // Prevent duplicates (reconnects)
+          // Dedupe reconnects
           const exists = state.players.some((p) => p.id === incoming.id);
           if (exists) break;
 
@@ -264,7 +269,10 @@ export const useGameStore = create<GameStore>((set, get) => ({
           };
 
           const nextPlayers = [...state.players, newPlayer];
-          const patch: Partial<GameState> = { players: nextPlayers };
+
+          const patch: Partial<GameState> = {
+            players: nextPlayers,
+          };
 
           set(patch);
           sync(patch);
@@ -283,73 +291,29 @@ export const useGameStore = create<GameStore>((set, get) => ({
         }
 
         case "REACTION_TAP": {
-          // Host records taps
-          if (state.phase !== "reaction") break;
-          if (!state.lastReactionStart) break;
-          if (state.smokoUntil) break;
-
-          const tapperId = msg.playerId as string;
-          const time = msg.time as number;
-
-          // Starter excluded from losing race
-          if (tapperId === state.reactionStarterId) break;
-
-          // Prevent double taps
-          const already = state.reactionResults.some((r) => r.playerId === tapperId);
-          if (already) break;
-
-          const diff = Math.max(0, time - state.lastReactionStart);
-
-          const result = { playerId: tapperId, time: diff, rank: 0 };
-          const results = [...state.reactionResults, result]
-            .sort((a, b) => a.time - b.time)
-            .map((r, i) => ({ ...r, rank: i + 1 }));
-
-          const patch: Partial<GameState> = { reactionResults: results };
-          set(patch);
-          sync(patch);
-
-          // Everyone except starter taps => resolve loser
-          const expected = state.players.length - 1;
-          if (results.length >= expected) {
-            const loser = results[results.length - 1];
-
-            const copy = structuredClone(get()) as GameState;
-            applyDrinkChain(copy, loser.playerId);
-
-            // End reaction
-            copy.phase = "playing";
-            copy.reactionResults = [];
-            copy.lastReactionStart = undefined;
-            copy.reactionStarterId = undefined;
-
-            set(copy as any);
-            sync(copy);
-          }
-
+          handleReactionTapHost(msg);
           break;
         }
 
         case "GOTCHA": {
-          // Host applies gotcha
           if (state.smokoUntil) break;
           get().gotcha(msg.targetId);
           break;
         }
 
+        // Not in your NetworkMessage union yet — we cast (any) to keep build green.
         case "MATE_ADD": {
-          // Host adds mate relationship
           if (state.smokoUntil) break;
 
           const fromId = msg.fromId as string;
           const targetId = msg.targetId as string;
 
           const copy = structuredClone(get()) as GameState;
+
           const from = copy.players.find((p) => p.id === fromId);
           if (!from) break;
 
           const arr = from.mateIds ?? [];
-          // avoid duplicates + self
           if (targetId && targetId !== fromId && !arr.includes(targetId)) {
             from.mateIds = [...arr, targetId];
           }
@@ -359,51 +323,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
           break;
         }
 
-        case "SMOKO_REQUEST": {
-          // Host starts smoko if caller hasn't used it
+        // Use your typed message SMOKO_TRIGGER as the request signal
+        case "SMOKO_TRIGGER": {
           if (state.smokoUntil) break;
 
           const callerId = msg.playerId as string;
-          const caller = state.players.find((p) => p.id === callerId);
-          if (!caller || caller.smokoUsed) break;
-
-          const copy = structuredClone(get()) as GameState;
-
-          // mark used
-          const p = copy.players.find((x) => x.id === callerId);
-          if (!p) break;
-          p.smokoUsed = true;
-
-          const until = Date.now() + SMOKO_DURATION;
-          copy.phase = "paused" as any;
-          copy.smokoUntil = until;
-          copy.smokoCallerId = callerId;
-
-          set(copy as any);
-          sync(copy);
-
-          // clear existing timer
-          if (smokoTimer) clearTimeout(smokoTimer);
-          smokoTimer = setTimeout(() => {
-            const s2 = useGameStore.getState();
-            if (!s2.isHost) return;
-
-            const after = structuredClone(useGameStore.getState()) as any;
-            after.phase = "playing";
-            after.smokoUntil = undefined;
-            after.smokoCallerId = undefined;
-
-            useGameStore.setState(after);
-            sync(after);
-
-            smokoTimer = null;
-          }, SMOKO_DURATION);
-
-          break;
-        }
-
-        case "SYNC_STATE": {
-          // Host shouldn't normally receive SYNC_STATE, but tolerate it
+          hostStartSmoko(callerId);
           break;
         }
 
@@ -411,6 +336,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
           break;
       }
     });
+
+    // Initial broadcast (optional but helps instantly)
+    sync({});
 
     return peerId;
   },
@@ -449,17 +377,18 @@ export const useGameStore = create<GameStore>((set, get) => ({
       activeSpeaker: false,
     };
 
-    // Client sends join request
+    // Join request
     networkManager.sendToHost({
       type: "PLAYER_JOIN",
       player,
     });
 
-    // Client listens for SYNC_STATE + kick
+    // Listen for SYNC_STATE + kick
     networkManager.onMessage((msg: any) => {
       if (msg?.type === "SYNC_STATE") {
         get().receiveState(msg.state);
       }
+
       if (msg?.type === "KICK_PLAYER" && msg.playerId === get().myPlayerId) {
         window.location.reload();
       }
@@ -473,7 +402,6 @@ export const useGameStore = create<GameStore>((set, get) => ({
   startGame: () => {
     if (!get().isHost) return;
 
-    // Clear smoko timer on new game
     if (smokoTimer) clearTimeout(smokoTimer);
     smokoTimer = null;
 
@@ -485,9 +413,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
       isQuestionMaster: false,
       hasThumbMaster: false,
       hasHeaven: false,
-      mateIds: p.mateIds ?? [],
       smokoUsed: false,
       ready: true,
+      mateIds: p.mateIds ?? [],
     }));
 
     const next: Partial<GameState> = {
@@ -495,14 +423,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
       deck: generateDeck(),
       discardPile: [],
-
       activeCard: null,
 
       currentPlayerIndex: 0,
+      turnDirection: 1,
+
       kingsCount: 0,
 
       rules: [],
-
       availableRulePool: shuffle(MASTER_RULE_POOL).slice(0, 10),
 
       reactionResults: [],
@@ -518,7 +446,12 @@ export const useGameStore = create<GameStore>((set, get) => ({
       },
 
       smokoUntil: undefined,
-      smokoCallerId: undefined,
+      smokoById: undefined,
+
+      winnerId: undefined,
+      loserId: undefined,
+
+      questionMasterId: undefined,
 
       stats: {
         totalDrinks: 0,
@@ -535,15 +468,16 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   /* ======================================================
-     CARD DRAW
+     DRAW CARD
   ====================================================== */
 
   drawCard: () => {
     const state = get();
 
-    // Frozen engine during smoko
+    // Smoko freezes game engine
     if (state.smokoUntil) return;
 
+    // Client -> host request
     if (!state.isHost) {
       networkManager.sendToHost({
         type: "DRAW_REQUEST",
@@ -554,8 +488,9 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     if (state.phase !== "playing") return;
 
+    // End game when deck is empty (your rule)
     if (!state.deck.length) {
-      const over: Partial<GameState> = { phase: "gameover" as any };
+      const over: Partial<GameState> = { phase: "gameover" };
       set(over);
       sync(over);
       return;
@@ -570,7 +505,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const nextIndex =
       (state.currentPlayerIndex + state.turnDirection + state.players.length) % state.players.length;
 
-    // Build ONE authoritative next state (no double-sync)
+    // Build single authoritative next state
     const copy = structuredClone(get()) as GameState;
 
     copy.deck = deck;
@@ -580,9 +515,8 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     resolveCardInPlace(copy, card, current.id);
 
-    // End when deck empty (your rule)
     if (copy.deck.length === 0) {
-      copy.phase = "gameover" as any;
+      copy.phase = "gameover";
     }
 
     set(copy as any);
@@ -591,7 +525,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   /* ======================================================
      REACTION
-  ====================================================== */
+====================================================== */
 
   triggerReaction: () => {
     const state = get();
@@ -602,7 +536,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const now = Date.now();
 
     const next: Partial<GameState> = {
-      phase: "reaction" as any,
+      phase: "reaction",
       lastReactionStart: now,
       reactionStarterId: state.myPlayerId,
       reactionResults: [],
@@ -622,7 +556,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (state.phase !== "reaction") return;
     if (!state.lastReactionStart) return;
 
-    // Starter excluded
+    // Starter excluded from losing race
     if (state.myPlayerId === state.reactionStarterId) return;
 
     networkManager.sendToHost({
@@ -633,11 +567,11 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   /* ======================================================
-     Q GOTCHA
+     GOTCHA (Q)
   ====================================================== */
 
   gotcha: (targetId) => {
-    // Host only
+    // Client -> host
     if (!get().isHost) {
       networkManager.sendToHost({ type: "GOTCHA", targetId });
       return;
@@ -647,6 +581,7 @@ export const useGameStore = create<GameStore>((set, get) => ({
     if (state.smokoUntil) return;
 
     const copy = structuredClone(get()) as GameState;
+
     applyDrinkChain(copy, targetId);
     copy.stats.gotchas += 1;
 
@@ -662,13 +597,15 @@ export const useGameStore = create<GameStore>((set, get) => ({
     const state = get();
     if (state.smokoUntil) return;
 
-    // Client requests; Host applies
+    // Client requests; host applies
     if (!state.isHost) {
-      networkManager.sendToHost({
-        type: "MATE_ADD",
-        fromId: state.myPlayerId,
-        targetId,
-      });
+      networkManager.sendToHost(
+        ({
+          type: "MATE_ADD",
+          fromId: state.myPlayerId,
+          targetId,
+        } as any) // NOTE: not in NetworkMessage union yet
+      );
       return;
     }
 
@@ -686,34 +623,132 @@ export const useGameStore = create<GameStore>((set, get) => ({
   },
 
   /* ======================================================
-     SMOKO
+     SMOKO (pause engine, keep video)
   ====================================================== */
 
   triggerSmoko: () => {
     const state = get();
 
-    // If already active, ignore
     if (state.smokoUntil) return;
 
     const me = state.players.find((p) => p.id === state.myPlayerId);
     if (!me || me.smokoUsed) return;
 
-    // Client requests; Host starts
+    // Client requests via typed message SMOKO_TRIGGER
     if (!state.isHost) {
       networkManager.sendToHost({
-        type: "SMOKO_REQUEST",
+        type: "SMOKO_TRIGGER",
         playerId: state.myPlayerId,
       });
       return;
     }
 
-    // Host starts locally
-    networkManager.broadcast({
-      type: "SMOKO_REQUEST",
-      playerId: state.myPlayerId,
-    });
+    // Host starts immediately
+    hostStartSmoko(state.myPlayerId);
   },
 }));
+
+/* ======================================================
+   HOST HELPERS
+====================================================== */
+
+function hostStartSmoko(callerId: string) {
+  const state = useGameStore.getState();
+  if (!state.isHost) return;
+
+  // already paused
+  if (state.smokoUntil) return;
+
+  const caller = state.players.find((p) => p.id === callerId);
+  if (!caller || caller.smokoUsed) return;
+
+  const copy = structuredClone(state) as GameState;
+
+  const p = copy.players.find((x) => x.id === callerId);
+  if (!p) return;
+
+  p.smokoUsed = true;
+
+  const until = Date.now() + SMOKO_DURATION;
+
+  copy.phase = "paused";
+  copy.smokoUntil = until;
+  copy.smokoById = callerId;
+
+  useGameStore.setState(copy as any);
+  sync(copy);
+
+  if (smokoTimer) clearTimeout(smokoTimer);
+  smokoTimer = setTimeout(() => {
+    const s2 = useGameStore.getState();
+    if (!s2.isHost) return;
+
+    const after = structuredClone(useGameStore.getState()) as GameState;
+
+    // If something else changed phase, still clear smoko flags safely
+    after.phase = after.phase === "paused" ? "playing" : after.phase;
+    after.smokoUntil = undefined;
+    after.smokoById = undefined;
+
+    useGameStore.setState(after as any);
+    sync(after);
+
+    smokoTimer = null;
+  }, SMOKO_DURATION);
+}
+
+function handleReactionTapHost(msg: any) {
+  const state = useGameStore.getState();
+  if (!state.isHost) return;
+
+  if (state.smokoUntil) return;
+  if (state.phase !== "reaction") return;
+  if (!state.lastReactionStart) return;
+
+  const tapperId = msg.playerId as string;
+  const time = msg.time as number;
+
+  // Starter excluded from losing race (they started it)
+  if (tapperId === state.reactionStarterId) return;
+
+  // Prevent double taps
+  if (state.reactionResults.some((r) => r.playerId === tapperId)) return;
+
+  const diff = Math.max(0, time - state.lastReactionStart);
+
+  const nextResult = { playerId: tapperId, time: diff, rank: 0 };
+
+  const results = [...state.reactionResults, nextResult]
+    .sort((a, b) => a.time - b.time)
+    .map((r, i) => ({ ...r, rank: i + 1 }));
+
+  const patch: Partial<GameState> = { reactionResults: results };
+
+  useGameStore.setState(patch as any);
+  sync(patch);
+
+  // Everyone except starter has tapped -> resolve loser
+  const expected = state.players.length - 1;
+  if (results.length < expected) return;
+
+  const loser = results[results.length - 1];
+
+  const copy = structuredClone(useGameStore.getState()) as GameState;
+
+  // Loser drinks (+ mate chain)
+  applyDrinkChain(copy, loser.playerId);
+
+  copy.loserId = loser.playerId;
+
+  // End reaction
+  copy.phase = "playing";
+  copy.reactionResults = [];
+  copy.lastReactionStart = undefined;
+  copy.reactionStarterId = undefined;
+
+  useGameStore.setState(copy as any);
+  sync(copy);
+}
 
 /* ======================================================
    CARD RESOLVER (IN PLACE, HOST ONLY)
@@ -722,36 +757,28 @@ export const useGameStore = create<GameStore>((set, get) => ({
 function resolveCardInPlace(state: GameState, card: Card, drawerId: string) {
   const rank = card.rank;
 
-  // Count cards drawn (always)
+  // Always count cards drawn
   state.stats.cardsDrawn += 1;
 
-  /* A — Waterfall (UI/manual timer later) */
-  if (rank === "A") {
-    return;
-  }
+  /* A — Waterfall (timer UI later) */
+  if (rank === "A") return;
 
   /* 2 — You (targeting UI later) */
-  if (rank === "2") {
-    return;
-  }
+  if (rank === "2") return;
 
-  /* 3 — Me */
+  /* 3 — Me (drawer drinks, mate chain applies) */
   if (rank === "3") {
     applyDrinkChain(state, drawerId);
     return;
   }
 
   /* 4 — Whores (women drink) — needs gender flags later */
-  if (rank === "4") {
-    return;
-  }
+  if (rank === "4") return;
 
-  /* 5 — Dicks (men drink) */
-  if (rank === "5") {
-    return;
-  }
+  /* 5 — Dicks (men drink) — needs gender flags later */
+  if (rank === "5") return;
 
-  /* 6 — Everyone (+ mate chain rules apply via applyDrinkChain) */
+  /* 6 — Everyone (each player triggers their own mate chain) */
   if (rank === "6") {
     for (const p of state.players) {
       applyDrinkChain(state, p.id);
@@ -767,12 +794,10 @@ function resolveCardInPlace(state: GameState, card: Card, drawerId: string) {
     return;
   }
 
-  /* 8 — Mate handled in UI (MatePicker calls addMate) */
-  if (rank === "8") {
-    return;
-  }
+  /* 8 — Mate chosen in UI (MatePicker calls addMate) */
+  if (rank === "8") return;
 
-  /* 9 / 10 — Turn Game (5s timer) */
+  /* 9 / 10 — Turn Game (timed 5s) */
   if (rank === "9" || rank === "10") {
     state.turnGame = {
       active: true,
@@ -782,7 +807,7 @@ function resolveCardInPlace(state: GameState, card: Card, drawerId: string) {
       deadline: Date.now() + TURN_GAME_DURATION,
     };
 
-    state.phase = "turngame" as any;
+    state.phase = "turngame";
     return;
   }
 
@@ -799,30 +824,28 @@ function resolveCardInPlace(state: GameState, card: Card, drawerId: string) {
     state.players.forEach((p) => (p.isQuestionMaster = false));
     const drawer = state.players.find((p) => p.id === drawerId);
     if (drawer) drawer.isQuestionMaster = true;
+    state.questionMasterId = drawerId;
     return;
   }
 
   /* K — Add a random rule from pool */
   if (rank === "K") {
     state.kingsCount += 1;
-
     const rule = state.availableRulePool.shift();
     if (rule) state.rules.push(rule);
-
     return;
   }
 }
 
 /* ======================================================
-   SYNC (HOST ONLY BROADCAST)
+   SYNC (HOST BROADCAST)
 ====================================================== */
 
-function sync(statePatchOrFull: Partial<GameState> | GameState) {
-  // Always broadcast the FULL public state so clients stay aligned.
-  const full = { ...useGameStore.getState(), ...(statePatchOrFull as any) };
+function sync(patchOrFull: Partial<GameState> | GameState) {
+  const full = { ...useGameStore.getState(), ...(patchOrFull as any) };
 
   networkManager.broadcast({
     type: "SYNC_STATE",
     state: full,
   });
-}
+       }
