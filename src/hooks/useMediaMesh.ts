@@ -1,44 +1,113 @@
-import { useEffect, useState } from 'react';
-import { networkManager } from '../network/NetworkManager';
-import { useGameStore } from '../store/gameStore';
+import { useEffect, useRef, useState } from "react";
+import { networkManager } from "../network/NetworkManager";
+import { useGameStore } from "../store/gameStore";
+
+/*
+  Maintains peer-to-peer media mesh
+  - Handles incoming streams
+  - Initiates outgoing calls
+  - Cleans up dead peers
+*/
 
 export const useMediaMesh = () => {
-  const players = useGameStore(state => state.players);
+  const players = useGameStore((s) => s.players);
+
   const [streams, setStreams] = useState<Record<string, MediaStream>>({});
 
+  // Track active calls to avoid duplicates
+  const activeCalls = useRef<Set<string>>(new Set());
+
+  /* ======================================================
+     INCOMING STREAMS
+  ====================================================== */
+
   useEffect(() => {
-    // Handle incoming streams
-    const unsubscribe = networkManager.onStream((stream, peerId) => {
-      setStreams(prev => ({ ...prev, [peerId]: stream }));
-    });
+    const unsubscribe = networkManager.onStream(
+      (stream, peerId) => {
+        setStreams((prev) => ({
+          ...prev,
+          [peerId]: stream,
+        }));
+
+        activeCalls.current.add(peerId);
+      }
+    );
+
     return unsubscribe;
   }, []);
 
+  /* ======================================================
+     CLEANUP DISCONNECTED PEERS
+  ====================================================== */
+
   useEffect(() => {
-    // Handle outgoing calls to new players
-    // We only call if we have a local stream and the player is not us
-    if (!networkManager.localStream) return;
+    setStreams((prev) => {
+      const next: Record<string, MediaStream> = {};
 
-    players.forEach(player => {
-      if (player.peerId === networkManager.myPeerId) return; // Don't call self
-      if (streams[player.peerId]) return; // Already have stream
+      players.forEach((p) => {
+        if (prev[p.peerId]) {
+          next[p.peerId] = prev[p.peerId];
+        }
+      });
 
-      // Check if we are already calling? networkManager tracks connections.
-      // But we can just try to call. NetworkManager should probably dedupe or PeerJS handles it.
-      // Better: Only call if we are "older" or some deterministic rule?
-      // Or just everyone calls everyone and PeerJS handles busy state?
-      // Simple mesh: A joins. A calls B, C, D. 
-      // Existing B sees A in list. B could call A?
-      // To avoid collision: Sort IDs. Lower ID calls Higher ID?
-      
-      const myId = networkManager.myPeerId;
-      const theirId = player.peerId;
-      
-      if (myId < theirId && networkManager.localStream) {
-         networkManager.callPeer(theirId, networkManager.localStream);
+      return next;
+    });
+
+    // Clean call registry
+    const validIds = new Set(players.map((p) => p.peerId));
+
+    activeCalls.current.forEach((id) => {
+      if (!validIds.has(id)) {
+        activeCalls.current.delete(id);
+      }
+    });
+  }, [players]);
+
+  /* ======================================================
+     OUTGOING CALLS
+  ====================================================== */
+
+  useEffect(() => {
+    const stream = networkManager.localStream;
+    const myId = networkManager.myPeerId;
+
+    if (!stream || !myId) return;
+
+    players.forEach((player) => {
+      const peerId = player.peerId;
+
+      if (!peerId) return;
+      if (peerId === myId) return;
+
+      // Already connected
+      if (streams[peerId]) return;
+
+      // Already calling
+      if (activeCalls.current.has(peerId)) return;
+
+      /*
+        Deterministic caller rule:
+        Lower peerId calls higher peerId
+        Prevents double calls
+      */
+      if (myId < peerId) {
+        activeCalls.current.add(peerId);
+
+        networkManager.callPeer(peerId, stream);
       }
     });
   }, [players, streams]);
+
+  /* ======================================================
+     RESET ON ROOM CHANGE
+  ====================================================== */
+
+  useEffect(() => {
+    if (players.length === 0) {
+      setStreams({});
+      activeCalls.current.clear();
+    }
+  }, [players.length]);
 
   return streams;
 };
