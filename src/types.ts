@@ -1,6 +1,14 @@
 /* src/types.ts */
 
-export type Suit = "hearts" | "diamonds" | "clubs" | "spades";
+/* ======================================================
+   CARD
+====================================================== */
+
+export type Suit =
+  | "hearts"
+  | "diamonds"
+  | "clubs"
+  | "spades";
 
 export type Rank =
   | "A"
@@ -17,10 +25,6 @@ export type Rank =
   | "Q"
   | "K";
 
-/* ======================================================
-   CARD
-====================================================== */
-
 export interface Card {
   id: string;
   suit: Suit;
@@ -36,28 +40,32 @@ export interface Player {
   name: string;
   peerId: string;
 
+  /* Host / Lobby */
   isHost: boolean;
   ready: boolean;
 
+  /* Drinks */
   drinks: number;
 
+  /* Roles */
   isQuestionMaster: boolean;
   hasThumbMaster: boolean;
   hasHeaven: boolean;
 
-  // Multiple directed mates
+  /* Mates (directed graph) */
   mateIds: string[];
 
-  // Smoko
+  /* Smoko */
   smokoUsed: boolean;
 
+  /* Media */
   cameraEnabled: boolean;
   micEnabled: boolean;
   activeSpeaker: boolean;
 }
 
 /* ======================================================
-   GAME
+   GAME PHASE
 ====================================================== */
 
 export type GamePhase =
@@ -94,10 +102,13 @@ export interface ReactionResult {
 
 export interface TurnGameState {
   active: boolean;
+
   mode: "rhyme" | "category";
+
   prompt: string;
 
   currentIndex: number;
+
   deadline: number;
 }
 
@@ -117,28 +128,36 @@ export interface GameStats {
 ====================================================== */
 
 export interface GameState {
+  /* Room */
   roomId: string;
 
+  /* Players */
   players: Player[];
 
+  /* Cards */
   deck: Card[];
   discardPile: Card[];
 
   activeCard: Card | null;
 
+  /* Phase */
   phase: GamePhase;
 
+  /* Turn */
   currentPlayerIndex: number;
   turnDirection: 1 | -1;
 
+  /* Kings */
   kingsCount: number;
 
+  /* Rules */
   rules: Rule[];
   availableRulePool: Rule[];
 
   /* Reaction */
   lastReactionStart?: number;
   reactionStarterId?: string;
+
   reactionResults: ReactionResult[];
 
   /* Turn Game */
@@ -152,6 +171,11 @@ export interface GameState {
 
   /* Smoko */
   smokoUntil?: number;
+  smokoById?: string;
+
+  /* Results */
+  winnerId?: string;
+  loserId?: string;
 }
 
 /* ======================================================
@@ -159,10 +183,38 @@ export interface GameState {
 ====================================================== */
 
 export type NetworkMessage =
-  | { type: "SYNC_STATE"; state: Partial<GameState> }
-  | { type: "PLAYER_JOIN"; player: Player }
-  | { type: "KICK_PLAYER"; playerId: string }
-  | { type: "REACTION_TAP"; playerId: string; time: number }
-  | { type: "DRAW_REQUEST"; playerId: string }
-  | { type: "GOTCHA"; targetId: string }
-  | { type: "SMOKO_TRIGGER"; playerId: string };
+  | {
+      type: "SYNC_STATE";
+      state: Partial<GameState>;
+    }
+
+  | {
+      type: "PLAYER_JOIN";
+      player: Player;
+    }
+
+  | {
+      type: "KICK_PLAYER";
+      playerId: string;
+    }
+
+  | {
+      type: "REACTION_TAP";
+      playerId: string;
+      time: number;
+    }
+
+  | {
+      type: "DRAW_REQUEST";
+      playerId: string;
+    }
+
+  | {
+      type: "GOTCHA";
+      targetId: string;
+    }
+
+  | {
+      type: "SMOKO_TRIGGER";
+      playerId: string;
+    };
