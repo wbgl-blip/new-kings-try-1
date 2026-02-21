@@ -187,34 +187,37 @@ export type NetworkMessage =
       type: "SYNC_STATE";
       state: Partial<GameState>;
     }
-
   | {
       type: "PLAYER_JOIN";
       player: Player;
     }
-
   | {
       type: "KICK_PLAYER";
       playerId: string;
     }
-
   | {
       type: "REACTION_TAP";
       playerId: string;
       time: number;
     }
-
   | {
       type: "DRAW_REQUEST";
       playerId: string;
     }
-
   | {
       type: "GOTCHA";
       targetId: string;
     }
-
   | {
       type: "SMOKO_TRIGGER";
+      playerId: string;
+    }
+  | {
+      type: "MATE_ADD";
+      fromId: string;
+      targetId: string;
+    }
+  | {
+      type: "SMOKO_REQUEST";
       playerId: string;
     };
