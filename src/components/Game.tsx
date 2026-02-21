@@ -2,9 +2,11 @@
 
 import React, { useState } from "react";
 import { useGameStore } from "../store/gameStore";
+
 import { VideoGrid } from "./VideoGrid";
 import { Card } from "./Card";
 import { HUD } from "./HUD";
+
 import { MatePicker } from "./MatePicker";
 import { TurnGameOverlay } from "./TurnGameOverlay";
 import { GotchaModal } from "./GotchaModal";
@@ -26,6 +28,7 @@ export const Game: React.FC = () => {
     rules,
     drawCard,
     startGame,
+    smokoUntil,
   } = useGameStore();
 
   const [showRules, setShowRules] = useState(false);
@@ -33,6 +36,16 @@ export const Game: React.FC = () => {
 
   const currentPlayer = players[currentPlayerIndex];
   const isMyTurn = currentPlayer?.id === myPlayerId;
+
+  /* =============================================
+     GAME LOCK STATE
+  ============================================= */
+
+  const isPaused = phase === "paused";
+  const isTurnGame = phase === "turngame";
+  const isReaction = phase === "reaction";
+
+  const locked = isPaused || isTurnGame || isReaction;
 
   /* =============================================
      FULLSCREEN
@@ -47,7 +60,7 @@ export const Game: React.FC = () => {
   };
 
   /* =============================================
-     GAMEOVER
+     GAME OVER
   ============================================= */
 
   if (phase === "gameover") {
@@ -59,7 +72,7 @@ export const Game: React.FC = () => {
         </h1>
 
         <div className="space-y-1 text-sm text-neutral-400">
-          {players.map(p => (
+          {players.map((p) => (
             <div key={p.id}>
               {p.name}: {p.drinks} 🍺
             </div>
@@ -86,20 +99,28 @@ export const Game: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-black text-white overflow-hidden">
 
-      {/* VIDEO STRIP */}
+      {/* ================= VIDEO STRIP ================= */}
+
       <div className="h-1/4 min-h-[120px] bg-neutral-900 p-2 overflow-y-auto">
         <VideoGrid />
       </div>
 
-      {/* TABLE AREA */}
-      <div className="flex-1 relative flex flex-col items-center justify-center p-4">
+      {/* ================= TABLE ================= */}
+
+      <div
+        className={cn(
+          "flex-1 relative flex flex-col items-center justify-center p-4 transition-opacity",
+          locked && "opacity-50 pointer-events-none"
+        )}
+      >
 
         {/* TURN INDICATOR */}
         <div className="absolute top-3 left-0 right-0 text-center z-10">
+
           <span
             className={cn(
               "px-4 py-1 rounded-full text-xs font-bold",
-              isMyTurn
+              isMyTurn && !locked
                 ? "bg-green-500 text-black animate-pulse"
                 : "bg-neutral-800 text-neutral-300"
             )}
@@ -108,6 +129,7 @@ export const Game: React.FC = () => {
               ? "YOUR TURN"
               : `${currentPlayer?.name}'s Turn`}
           </span>
+
         </div>
 
         {/* CARD TABLE */}
@@ -115,18 +137,19 @@ export const Game: React.FC = () => {
 
           {/* DECK */}
           <div className="relative">
+
             {deck.length > 0 ? (
               <Card
                 card={deck[0]}
                 faceDown
                 onClick={
-                  isMyTurn && phase === "playing"
+                  isMyTurn && phase === "playing" && !locked
                     ? drawCard
                     : undefined
                 }
                 className={cn(
                   "cursor-pointer transition-transform",
-                  isMyTurn && "hover:scale-105"
+                  isMyTurn && !locked && "hover:scale-105"
                 )}
               />
             ) : (
@@ -138,6 +161,7 @@ export const Game: React.FC = () => {
             <div className="absolute -bottom-6 inset-x-0 text-center text-xs text-neutral-500">
               {deck.length} cards
             </div>
+
           </div>
 
           {/* ACTIVE CARD */}
@@ -158,19 +182,24 @@ export const Game: React.FC = () => {
 
       </div>
 
-      {/* RULE PREVIEW STRIP */}
+      {/* ================= RULE STRIP ================= */}
+
       {rules.length > 0 && (
         <div className="px-3 py-2 bg-neutral-900 border-t border-neutral-800 text-xs max-h-20 overflow-y-auto">
-          {rules.map(r => (
+
+          {rules.map((r) => (
             <div key={r.id}>• {r.text}</div>
           ))}
+
         </div>
       )}
 
-      {/* PLAYER HUD */}
+      {/* ================= HUD ================= */}
+
       <HUD />
 
-      {/* BOTTOM BAR */}
+      {/* ================= BOTTOM BAR ================= */}
+
       <div className="bg-neutral-900 border-t border-neutral-800 p-3 flex justify-between text-neutral-400">
 
         <button
@@ -201,7 +230,7 @@ export const Game: React.FC = () => {
 
       </div>
 
-      {/* MODALS & OVERLAYS */}
+      {/* ================= MODALS ================= */}
 
       <AnimatePresence>
 
@@ -213,7 +242,9 @@ export const Game: React.FC = () => {
             exit={{ y: "100%" }}
             className="fixed inset-x-0 bottom-0 top-1/4 bg-neutral-900 z-40 rounded-t-2xl p-5 overflow-y-auto"
           >
+
             <div className="flex justify-between mb-4">
+
               <h2 className="font-bold text-lg">
                 Active Rules
               </h2>
@@ -224,6 +255,7 @@ export const Game: React.FC = () => {
               >
                 Close
               </button>
+
             </div>
 
             {rules.length === 0 && (
@@ -232,7 +264,7 @@ export const Game: React.FC = () => {
               </p>
             )}
 
-            {rules.map(r => (
+            {rules.map((r) => (
               <div
                 key={r.id}
                 className="p-3 bg-neutral-800 rounded-lg mb-2"
@@ -240,6 +272,7 @@ export const Game: React.FC = () => {
                 {r.text}
               </div>
             ))}
+
           </motion.div>
         )}
 
@@ -251,7 +284,9 @@ export const Game: React.FC = () => {
             exit={{ y: "100%" }}
             className="fixed inset-x-0 bottom-0 bg-neutral-950 z-50 rounded-t-2xl p-5 border-t border-neutral-800"
           >
+
             <div className="flex justify-between mb-4">
+
               <h2 className="font-bold text-red-400">
                 Host Tools
               </h2>
@@ -262,6 +297,7 @@ export const Game: React.FC = () => {
               >
                 Close
               </button>
+
             </div>
 
             <button
@@ -277,7 +313,8 @@ export const Game: React.FC = () => {
 
       </AnimatePresence>
 
-      {/* CORE GAME OVERLAYS (always mounted) */}
+      {/* ================= CORE OVERLAYS ================= */}
+
       <MatePicker />
       <TurnGameOverlay />
       <GotchaModal />
