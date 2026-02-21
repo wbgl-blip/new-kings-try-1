@@ -1,67 +1,107 @@
+/* src/store/gameStore.ts */
+
 import { create } from "zustand";
 import { v4 as uuidv4 } from "uuid";
 
-import { GameState, Player, GameStats, Rank } from "../types";
-import { generateDeck } from "../constants";
+import {
+  GameState,
+  Player,
+  Card,
+  Rank,
+  Rule,
+} from "../types";
+
 import { networkManager } from "../network/NetworkManager";
 
 /* ======================================================
-   TYPES
+   CONSTANTS
 ====================================================== */
 
-interface GameStore extends GameState {
-  myPlayerId: string;
-  isHost: boolean;
+const SMOKO_DURATION = 30_000;
 
-  /* Room */
-  createRoom: (name: string) => Promise<string>;
-  joinRoom: (roomId: string, name: string) => Promise<void>;
+/* ======================================================
+   HELPERS
+====================================================== */
 
-  /* Lobby */
-  setMyReady: (ready: boolean) => void;
+function shuffle<T>(arr: T[]) {
+  return [...arr].sort(() => Math.random() - 0.5);
+}
 
-  /* Flow */
-  startGame: () => void;
-  resetGame: () => void;
+function generateDeck(): Card[] {
+  const suits = ["hearts", "diamonds", "clubs", "spades"] as const;
+  const ranks: Rank[] = [
+    "A","2","3","4","5","6","7","8","9","10","J","Q","K"
+  ];
 
-  /* Gameplay */
-  drawCard: () => void;
+  const deck: Card[] = [];
 
-  /* Reactions */
-  triggerReaction: () => void;
-  tapReaction: () => void;
-  resolveReaction: () => void;
+  for (const s of suits) {
+    for (const r of ranks) {
+      deck.push({
+        id: uuidv4(),
+        suit: s,
+        rank: r,
+      });
+    }
+  }
 
-  /* Modifiers */
-  updatePlayerStats: (playerId: string, drinks: number) => void;
-  makeRule: (text: string) => void;
-
-  setQuestionMaster: (id: string) => void;
-  setThumbMaster: (id: string) => void;
-
-  /* Host */
-  kickPlayer: (id: string) => void;
-
-  /* Sync */
-  receiveState: (state: Partial<GameState>) => void;
+  return shuffle(deck);
 }
 
 /* ======================================================
-   INITIALS
+   DRINK ENGINE (MATE GRAPH)
 ====================================================== */
 
-const INITIAL_STATS: GameStats = {
-  totalDrinks: 0,
-  cardsDrawn: 0,
-  reactionsTriggered: 0,
-  gotchas: 0,
-};
+function applyDrinkChain(
+  state: GameState,
+  startId: string,
+  visited = new Set<string>()
+) {
+  if (visited.has(startId)) return;
+
+  visited.add(startId);
+
+  const player = state.players.find(p => p.id === startId);
+  if (!player) return;
+
+  player.drinks += 1;
+  state.stats.totalDrinks += 1;
+
+  for (const mate of player.mateIds) {
+    applyDrinkChain(state, mate, visited);
+  }
+}
+
+/* ======================================================
+   RULE POOL
+====================================================== */
+
+const MASTER_RULE_POOL: Rule[] = [
+  { id: "1", title: "No Names", text: "No saying names" },
+  { id: "2", title: "Left Hand", text: "Left hand only" },
+  { id: "3", title: "British", text: "British accent" },
+  { id: "4", title: "No Phone", text: "No phones" },
+  { id: "5", title: "Whisper", text: "Whisper only" },
+  { id: "6", title: "Roast", text: "Roast before drink" },
+  { id: "7", title: "No Laugh", text: "No laughing" },
+  { id: "8", title: "No Point", text: "No pointing" },
+  { id: "9", title: "Narrate", text: "Narrate drinks" },
+  { id: "10", title: "Cheers", text: "Cheers every sip" },
+  // Add more later
+];
+
+/* ======================================================
+   INITIAL STATE
+====================================================== */
 
 const INITIAL_STATE: GameState = {
   roomId: "",
+
   players: [],
+
   deck: [],
   discardPile: [],
+
   activeCard: null,
 
   phase: "lobby",
@@ -72,14 +112,52 @@ const INITIAL_STATE: GameState = {
   kingsCount: 0,
 
   rules: [],
+  availableRulePool: [],
+
   reactionResults: [],
-  lastReactionStart: undefined,
 
-  stats: INITIAL_STATS,
+  turnGame: {
+    active: false,
+    mode: "rhyme",
+    prompt: "",
+    currentIndex: 0,
+    deadline: 0,
+  },
 
-  thumbMasterId: undefined,
-  questionMasterId: undefined,
+  stats: {
+    totalDrinks: 0,
+    cardsDrawn: 0,
+    reactionsTriggered: 0,
+    gotchas: 0,
+  },
 };
+
+/* ======================================================
+   STORE
+====================================================== */
+
+interface GameStore extends GameState {
+  myPlayerId: string;
+  isHost: boolean;
+
+  createRoom(name: string): Promise<string>;
+  joinRoom(id: string, name: string): Promise<void>;
+
+  startGame(): void;
+
+  drawCard(): void;
+
+  triggerReaction(): void;
+  tapReaction(): void;
+
+  gotcha(targetId: string): void;
+
+  addMate(targetId: string): void;
+
+  triggerSmoko(): void;
+
+  receiveState(state: Partial<GameState>): void;
+}
 
 /* ======================================================
    STORE
@@ -90,6 +168,14 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
   myPlayerId: "",
   isHost: false,
+
+  /* ======================================================
+     NETWORK
+  ====================================================== */
+
+  receiveState: (s) => {
+    set(st => ({ ...st, ...s }));
+  },
 
   /* ======================================================
      ROOM
@@ -113,77 +199,41 @@ export const useGameStore = create<GameStore>((set, get) => ({
       hasThumbMaster: false,
       hasHeaven: false,
 
+      mateIds: [],
+      smokoUsed: false,
+
       cameraEnabled: true,
       micEnabled: true,
       activeSpeaker: false,
     };
 
+    const rulePool = shuffle(MASTER_RULE_POOL).slice(0, 10);
+
     set({
       roomId: peerId,
       myPlayerId: id,
       isHost: true,
+
       players: [host],
+
       deck: generateDeck(),
+
+      availableRulePool: rulePool,
     });
 
-    /* Host listens for all messages */
-    networkManager.onMessage((msg, senderPeerId) => {
-      const state = get();
-      if (!state.isHost) return;
+    networkManager.onMessage((msg) => {
+      if (msg.type === "SYNC_STATE") {
+        get().receiveState(msg.state);
+      }
 
-      switch (msg.type) {
-        case "PLAYER_JOIN": {
-          // Avoid duplicates (refresh / reconnect edge cases)
-          const exists = state.players.some((p) => p.id === msg.player.id);
-          if (exists) {
-            // Still sync current state to that peer
-            broadcastStateSnapshot();
-            return;
-          }
+      if (msg.type === "REACTION_TAP") {
+        get().tapReaction();
+      }
 
-          const newPlayer: Player = {
-            ...msg.player,
-            peerId: senderPeerId,
-          };
-
-          const players = [...state.players, newPlayer];
-          set({ players });
-
-          broadcastStateSnapshot();
-          return;
-        }
-
-        case "PLAYER_READY": {
-          const { playerId, ready } = msg;
-
-          const players = state.players.map((p) =>
-            p.id === playerId ? { ...p, ready: !!ready } : p
-          );
-
-          set({ players });
-          broadcastStateSnapshot();
-          return;
-        }
-
-        case "DRAW_REQUEST": {
-          if (state.phase !== "playing") return;
-
-          const current = state.players[state.currentPlayerIndex];
-          if (current?.id === msg.playerId) {
-            get().drawCard();
-          }
-          return;
-        }
-
-        case "REACTION_TAP": {
-          handleReactionTap(msg);
-          return;
-        }
+      if (msg.type === "SMOKO_TRIGGER") {
+        get().triggerSmoko();
       }
     });
-
-    // Host immediately broadcasts initial snapshot (helps late listeners)
-    broadcastStateSnapshot();
 
     return peerId;
   },
@@ -200,132 +250,61 @@ export const useGameStore = create<GameStore>((set, get) => ({
 
     await networkManager.connectToHost(roomId);
 
+    const player: Player = {
+      id,
+      name,
+      peerId,
+
+      isHost: false,
+      ready: true,
+
+      drinks: 0,
+
+      isQuestionMaster: false,
+      hasThumbMaster: false,
+      hasHeaven: false,
+
+      mateIds: [],
+      smokoUsed: false,
+
+      cameraEnabled: true,
+      micEnabled: true,
+      activeSpeaker: false,
+    };
+
     networkManager.sendToHost({
       type: "PLAYER_JOIN",
-      player: {
-        id,
-        name,
-        peerId,
-
-        isHost: false,
-        ready: true,
-
-        drinks: 0,
-
-        isQuestionMaster: false,
-        hasThumbMaster: false,
-        hasHeaven: false,
-
-        cameraEnabled: true,
-        micEnabled: true,
-        activeSpeaker: false,
-      },
-    });
-
-    networkManager.onMessage((msg) => {
-      if (msg.type === "SYNC_STATE") {
-        get().receiveState(msg.state);
-      }
-
-      if (msg.type === "KICK_PLAYER") {
-        if (msg.playerId === get().myPlayerId) {
-          window.location.reload();
-        }
-      }
-    });
-
-    // Ask host for snapshot (in case join races listener timing)
-    networkManager.sendToHost({ type: "REQUEST_SYNC" });
-  },
-
-  receiveState: (state) => {
-    set((s) => ({ ...s, ...state }));
-  },
-
-  /* ======================================================
-     LOBBY
-  ====================================================== */
-
-  setMyReady: (ready) => {
-    const state = get();
-
-    // Host updates locally and rebroadcasts
-    if (state.isHost) {
-      const players = state.players.map((p) =>
-        p.id === state.myPlayerId ? { ...p, ready: !!ready } : p
-      );
-
-      set({ players });
-      broadcastStateSnapshot();
-      return;
-    }
-
-    // Client requests host update
-    networkManager.sendToHost({
-      type: "PLAYER_READY",
-      playerId: state.myPlayerId,
-      ready: !!ready,
+      player,
     });
   },
 
   /* ======================================================
-     FLOW
+     GAME FLOW
   ====================================================== */
 
   startGame: () => {
-    const state = get();
-    if (!state.isHost) return;
+    if (!get().isHost) return;
 
     const next: Partial<GameState> = {
       phase: "playing",
-
       deck: generateDeck(),
       discardPile: [],
-      activeCard: null,
-
       currentPlayerIndex: 0,
       kingsCount: 0,
-
       rules: [],
-      reactionResults: [],
-      lastReactionStart: undefined,
-
-      stats: INITIAL_STATS,
     };
 
     set(next);
-    broadcastStateSnapshot();
-  },
-
-  resetGame: () => {
-    const state = get();
-    if (!state.isHost) return;
-
-    const next: Partial<GameState> = {
-      ...INITIAL_STATE,
-      roomId: state.roomId,
-      players: state.players.map((p) => ({
-        ...p,
-        // Reset per-round toggles cleanly
-        drinks: 0,
-        isQuestionMaster: false,
-        hasThumbMaster: false,
-        hasHeaven: false,
-      })),
-    };
-
-    set(next);
-    broadcastStateSnapshot();
+    sync(next);
   },
 
   /* ======================================================
-     GAMEPLAY
+     CARD DRAW
   ====================================================== */
 
   drawCard: () => {
     const state = get();
 
-    /* Client → Host */
     if (!state.isHost) {
       networkManager.sendToHost({
         type: "DRAW_REQUEST",
@@ -334,281 +313,265 @@ export const useGameStore = create<GameStore>((set, get) => ({
       return;
     }
 
-    if (!state.deck.length) return;
+    if (!state.deck.length) {
+      set({ phase: "gameover" });
+      return;
+    }
 
     const card = state.deck[0];
     const deck = state.deck.slice(1);
-    const discardPile = [card, ...state.discardPile];
 
-    let players = [...state.players];
+    const discard = [card, ...state.discardPile];
 
-    let kingsCount = state.kingsCount;
-    let phase = state.phase;
-
-    let thumbMasterId = state.thumbMasterId;
-    let questionMasterId = state.questionMasterId;
-
-    const current = players[state.currentPlayerIndex];
-
-    const r: Rank = card.rank;
-
-    if (r === "K") {
-      kingsCount += 1;
-      if (kingsCount >= 4) phase = "gameover";
-    }
-
-    if (r === "7") {
-      players.forEach((p) => (p.hasHeaven = false));
-      current.hasHeaven = true;
-    }
-
-    if (r === "J") {
-      players.forEach((p) => (p.hasThumbMaster = false));
-      current.hasThumbMaster = true;
-      thumbMasterId = current.id;
-    }
-
-    if (r === "Q") {
-      players.forEach((p) => (p.isQuestionMaster = false));
-      current.isQuestionMaster = true;
-      questionMasterId = current.id;
-    }
+    const current =
+      state.players[state.currentPlayerIndex];
 
     const nextIndex =
-      (state.currentPlayerIndex + state.turnDirection + players.length) %
-      players.length;
+      (state.currentPlayerIndex +
+        state.turnDirection +
+        state.players.length) %
+      state.players.length;
 
     const next: Partial<GameState> = {
       deck,
-      discardPile,
+      discardPile: discard,
       activeCard: card,
-
-      players,
       currentPlayerIndex: nextIndex,
-
-      kingsCount,
-      phase,
-
-      thumbMasterId,
-      questionMasterId,
-
-      stats: {
-        ...state.stats,
-        cardsDrawn: state.stats.cardsDrawn + 1,
-      },
     };
 
+    resolveCard(state, card, current.id);
+
     set(next);
-    broadcastStateSnapshot();
+    sync(next);
   },
 
   /* ======================================================
-     REACTIONS
+     REACTION
   ====================================================== */
 
   triggerReaction: () => {
-    const state = get();
-    if (!state.isHost) return;
+    if (!get().isHost) return;
 
     const now = Date.now();
 
-    set({
+    const next = {
+      phase: "reaction" as const,
       lastReactionStart: now,
+      reactionStarterId: get().myPlayerId,
       reactionResults: [],
-      stats: {
-        ...state.stats,
-        reactionsTriggered: state.stats.reactionsTriggered + 1,
-      },
-    });
+    };
 
-    broadcastStateSnapshot();
+    set(next);
+    sync(next);
   },
 
   tapReaction: () => {
     const state = get();
+
     if (!state.lastReactionStart) return;
 
-    const time = Date.now();
-
-    if (!state.isHost) {
-      networkManager.sendToHost({
-        type: "REACTION_TAP",
-        playerId: state.myPlayerId,
-        time,
-      });
+    if (state.myPlayerId === state.reactionStarterId)
       return;
-    }
 
-    handleReactionTap({ playerId: state.myPlayerId, time });
-  },
+    const diff = Date.now() - state.lastReactionStart;
 
-  resolveReaction: () => {
-    const state = get();
-    if (!state.isHost) return;
+    const result = {
+      playerId: state.myPlayerId,
+      time: diff,
+      rank: 0,
+    };
 
-    setTimeout(() => {
+    const results = [...state.reactionResults, result]
+      .sort((a, b) => a.time - b.time)
+      .map((r, i) => ({ ...r, rank: i + 1 }));
+
+    set({ reactionResults: results });
+
+    sync({ reactionResults: results });
+
+    if (
+      results.length ===
+      state.players.length - 1
+    ) {
+      const loser =
+        results[results.length - 1];
+
+      const copy = structuredClone(state);
+
+      applyDrinkChain(copy, loser.playerId);
+
       set({
-        lastReactionStart: undefined,
+        phase: "playing",
         reactionResults: [],
+        lastReactionStart: undefined,
       });
 
-      broadcastStateSnapshot();
-    }, 2500);
+      sync(copy);
+    }
   },
 
   /* ======================================================
-     MODIFIERS
+     Q GOTCHA
   ====================================================== */
 
-  updatePlayerStats: (playerId, drinks) => {
-    const state = get();
-    if (!state.isHost) return;
+  gotcha: (id) => {
+    if (!get().isHost) return;
 
-    const players = state.players.map((p) =>
-      p.id === playerId ? { ...p, drinks: p.drinks + drinks } : p
+    const copy = structuredClone(get());
+
+    applyDrinkChain(copy, id);
+
+    copy.stats.gotchas += 1;
+
+    set(copy);
+    sync(copy);
+  },
+
+  /* ======================================================
+     MATE (8)
+  ====================================================== */
+
+  addMate: (targetId) => {
+    const copy = structuredClone(get());
+
+    const me = copy.players.find(
+      p => p.id === copy.myPlayerId
     );
 
-    const stats = {
-      ...state.stats,
-      totalDrinks: state.stats.totalDrinks + drinks,
-    };
+    if (!me) return;
 
-    set({ players, stats });
-    broadcastStateSnapshot();
-  },
+    me.mateIds.push(targetId);
 
-  makeRule: (text) => {
-    const state = get();
-    if (!state.isHost) return;
-
-    const rule = {
-      id: uuidv4(),
-      text,
-      createdBy: state.players[state.currentPlayerIndex]?.id ?? "host",
-    };
-
-    const rules = [...state.rules, rule];
-
-    set({ rules });
-    broadcastStateSnapshot();
-  },
-
-  setQuestionMaster: (id) => {
-    const state = get();
-    if (!state.isHost) return;
-
-    const players = state.players.map((p) => ({
-      ...p,
-      isQuestionMaster: p.id === id,
-    }));
-
-    set({ players, questionMasterId: id });
-    broadcastStateSnapshot();
-  },
-
-  setThumbMaster: (id) => {
-    const state = get();
-    if (!state.isHost) return;
-
-    const players = state.players.map((p) => ({
-      ...p,
-      hasThumbMaster: p.id === id,
-    }));
-
-    set({ players, thumbMasterId: id });
-    broadcastStateSnapshot();
+    set(copy);
+    sync(copy);
   },
 
   /* ======================================================
-     HOST
+     SMOKO
   ====================================================== */
 
-  kickPlayer: (id) => {
+  triggerSmoko: () => {
     const state = get();
-    if (!state.isHost) return;
 
-    const players = state.players.filter((p) => p.id !== id);
+    const me = state.players.find(
+      p => p.id === state.myPlayerId
+    );
 
-    set({ players });
-    broadcastStateSnapshot();
+    if (!me || me.smokoUsed) return;
 
-    networkManager.broadcast({
-      type: "KICK_PLAYER",
-      playerId: id,
-    });
+    me.smokoUsed = true;
+
+    const until = Date.now() + SMOKO_DURATION;
+
+    const next = {
+      phase: "paused" as const,
+      smokoUntil: until,
+    };
+
+    set(next);
+    sync(next);
+
+    setTimeout(() => {
+      set({ phase: "playing", smokoUntil: undefined });
+      sync({ phase: "playing", smokoUntil: undefined });
+    }, SMOKO_DURATION);
   },
 }));
 
 /* ======================================================
-   SYNC HELPERS (CRITICAL: NO ACTIONS!)
+   CARD RESOLVER
 ====================================================== */
 
-function snapshotGameState(): GameState {
-  const s = useGameStore.getState();
+function resolveCard(
+  state: GameState,
+  card: Card,
+  drawerId: string
+) {
+  const copy = structuredClone(state);
 
-  // IMPORTANT: only GameState fields, never Zustand actions/functions.
-  return {
-    roomId: s.roomId,
-    players: s.players,
+  const rank = card.rank;
 
-    deck: s.deck,
-    discardPile: s.discardPile,
-    activeCard: s.activeCard,
+  /* A — Waterfall (manual UI later) */
+  if (rank === "A") return;
 
-    phase: s.phase,
+  /* 2 — You */
+  if (rank === "2") return;
 
-    currentPlayerIndex: s.currentPlayerIndex,
-    turnDirection: s.turnDirection,
+  /* 3 — Me */
+  if (rank === "3") {
+    applyDrinkChain(copy, drawerId);
+  }
 
-    kingsCount: s.kingsCount,
+  /* 4 — Women (manual flag later) */
+  if (rank === "4") return;
 
-    rules: s.rules,
+  /* 5 — Men */
+  if (rank === "5") return;
 
-    reactionResults: s.reactionResults,
-    lastReactionStart: s.lastReactionStart,
+  /* 6 — Everyone */
+  if (rank === "6") {
+    for (const p of copy.players) {
+      applyDrinkChain(copy, p.id);
+    }
+  }
 
-    stats: s.stats,
+  /* 7 — Heaven */
+  if (rank === "7") {
+    copy.players.forEach(p => (p.hasHeaven = false));
+    const me = copy.players.find(p => p.id === drawerId);
+    if (me) me.hasHeaven = true;
+  }
 
-    thumbMasterId: s.thumbMasterId,
-    questionMasterId: s.questionMasterId,
-  };
+  /* 8 — Mate handled in UI */
+
+  /* 9 / 10 — Turn Game */
+  if (rank === "9" || rank === "10") {
+    copy.turnGame = {
+      active: true,
+      mode: rank === "9" ? "rhyme" : "category",
+      prompt: "",
+      currentIndex: copy.currentPlayerIndex,
+      deadline: Date.now() + 5000,
+    };
+
+    copy.phase = "turngame";
+  }
+
+  /* J — Thumb */
+  if (rank === "J") {
+    copy.players.forEach(p => (p.hasThumbMaster = false));
+    const me = copy.players.find(p => p.id === drawerId);
+    if (me) me.hasThumbMaster = true;
+  }
+
+  /* Q — Question Master */
+  if (rank === "Q") {
+    copy.players.forEach(p => (p.isQuestionMaster = false));
+    const me = copy.players.find(p => p.id === drawerId);
+    if (me) me.isQuestionMaster = true;
+  }
+
+  /* K — Rule */
+  if (rank === "K" && copy.rules.length < 4) {
+    const rule = copy.availableRulePool.shift();
+    if (rule) copy.rules.push(rule);
+  }
+
+  copy.stats.cardsDrawn += 1;
+
+  useGameStore.setState(copy);
+  sync(copy);
 }
 
-function broadcastStateSnapshot() {
-  const state = snapshotGameState();
+/* ======================================================
+   SYNC
+====================================================== */
+
+function sync(state: Partial<GameState>) {
+  const full = { ...useGameStore.getState(), ...state };
 
   networkManager.broadcast({
     type: "SYNC_STATE",
-    state,
+    state: full,
   });
 }
-
-function handleReactionTap(msg: { playerId: string; time: number }) {
-  const state = useGameStore.getState();
-  if (!state.isHost) return;
-  if (!state.lastReactionStart) return;
-
-  // Prevent double taps for the same player
-  if (state.reactionResults.some((r) => r.playerId === msg.playerId)) return;
-
-  const diff = msg.time - state.lastReactionStart;
-
-  const result = {
-    playerId: msg.playerId,
-    time: diff,
-    rank: 0,
-  };
-
-  const results = [...state.reactionResults, result].sort(
-    (a, b) => a.time - b.time
-  );
-
-  results.forEach((r, i) => (r.rank = i + 1));
-
-  useGameStore.setState({ reactionResults: results });
-  broadcastStateSnapshot();
-
-  if (results.length === state.players.length) {
-    useGameStore.getState().resolveReaction();
-  }
-     }
