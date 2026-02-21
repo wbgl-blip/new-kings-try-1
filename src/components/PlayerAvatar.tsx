@@ -1,7 +1,13 @@
-import React, { useEffect, useRef } from 'react';
-import { Player } from '../types';
-import { cn } from '../utils/cn';
-import { MicOff, Crown, ThumbsUp, HelpCircle } from 'lucide-react';
+import React, { useEffect, useRef } from "react";
+import { Player } from "../types";
+import { cn } from "../utils/cn";
+import {
+  MicOff,
+  Crown,
+  ThumbsUp,
+  HelpCircle,
+  VideoOff,
+} from "lucide-react";
 
 interface PlayerAvatarProps {
   player: Player;
@@ -10,46 +16,133 @@ interface PlayerAvatarProps {
   isActive?: boolean;
 }
 
-export const PlayerAvatar: React.FC<PlayerAvatarProps> = ({ player, stream, isLocal, isActive }) => {
+export const PlayerAvatar: React.FC<PlayerAvatarProps> = ({
+  player,
+  stream,
+  isLocal = false,
+  isActive = false,
+}) => {
   const videoRef = useRef<HTMLVideoElement>(null);
 
+  /* ======================================================
+     ATTACH STREAM
+  ====================================================== */
+
   useEffect(() => {
-    if (videoRef.current && stream) {
-      videoRef.current.srcObject = stream;
-    }
+    const video = videoRef.current;
+
+    if (!video || !stream) return;
+
+    // Attach stream
+    video.srcObject = stream;
+
+    // Force play (fixes mobile Safari / Android issues)
+    const play = async () => {
+      try {
+        await video.play();
+      } catch (err) {
+        console.warn("Video autoplay blocked:", err);
+      }
+    };
+
+    play();
+
+    return () => {
+      // Cleanup old stream
+      video.srcObject = null;
+    };
   }, [stream]);
 
+  /* ======================================================
+     FALLBACK LETTER
+  ====================================================== */
+
+  const initial =
+    player.name?.trim()?.[0]?.toUpperCase() ?? "?";
+
+  /* ======================================================
+     UI
+  ====================================================== */
+
   return (
-    <div className={cn(
-      "relative overflow-hidden rounded-lg bg-slate-800 shadow-md transition-all duration-300",
-      isActive ? "ring-4 ring-indigo-500" : "ring-1 ring-slate-700"
-    )}>
+    <div
+      className={cn(
+        "relative overflow-hidden rounded-xl bg-neutral-800 shadow-md transition-all duration-200",
+        isActive
+          ? "ring-2 ring-green-400 scale-[1.02]"
+          : "ring-1 ring-neutral-700"
+      )}
+    >
+      {/* VIDEO / PLACEHOLDER */}
+
       {stream ? (
         <video
           ref={videoRef}
           autoPlay
-          muted={isLocal} 
+          muted={isLocal}
           playsInline
-          className="h-full w-full object-cover"
+          disablePictureInPicture
+          className="h-full w-full object-cover bg-black"
         />
       ) : (
-        <div className="flex h-full w-full items-center justify-center bg-slate-700">
-           <span className="text-2xl font-bold text-slate-400">{player.name[0]?.toUpperCase()}</span>
-        </div>
-      )}
-      
-      {/* Overlay info */}
-      <div className="absolute bottom-0 left-0 right-0 bg-gradient-to-t from-black/80 to-transparent p-2">
-        <div className="flex items-center justify-between text-white">
-          <span className="truncate text-sm font-medium">{player.name} {isLocal && '(You)'}</span>
-          <div className="flex space-x-1">
-             {!player.micEnabled && <MicOff size={14} className="text-red-400" />}
-             {player.isHost && <Crown size={14} className="text-yellow-400" />}
-             {player.hasThumbMaster && <ThumbsUp size={14} className="text-green-400" />}
-             {player.isQuestionMaster && <HelpCircle size={14} className="text-purple-400" />}
+        <div className="flex h-full w-full flex-col items-center justify-center bg-neutral-700 text-neutral-300 space-y-1">
+          <VideoOff size={20} />
+          <div className="text-2xl font-black">
+            {initial}
           </div>
         </div>
-        <div className="text-xs text-slate-300">Drinks: {player.drinks}</div>
+      )}
+
+      {/* OVERLAY */}
+
+      <div className="pointer-events-none absolute inset-x-0 bottom-0 bg-gradient-to-t from-black/90 to-black/20 px-2 py-1.5">
+
+        {/* Name + Icons */}
+        <div className="flex items-center justify-between text-white gap-1">
+
+          <span className="truncate text-xs font-semibold">
+            {player.name}
+            {isLocal && " (You)"}
+          </span>
+
+          <div className="flex items-center gap-1 shrink-0">
+
+            {!player.micEnabled && (
+              <MicOff
+                size={12}
+                className="text-red-400"
+              />
+            )}
+
+            {player.isHost && (
+              <Crown
+                size={12}
+                className="text-yellow-400"
+              />
+            )}
+
+            {player.hasThumbMaster && (
+              <ThumbsUp
+                size={12}
+                className="text-green-400"
+              />
+            )}
+
+            {player.isQuestionMaster && (
+              <HelpCircle
+                size={12}
+                className="text-purple-400"
+              />
+            )}
+          </div>
+
+        </div>
+
+        {/* Stats */}
+        <div className="text-[10px] text-neutral-300 leading-tight">
+          🍺 {player.drinks}
+        </div>
+
       </div>
     </div>
   );
