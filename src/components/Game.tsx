@@ -5,6 +5,10 @@ import { useGameStore } from "../store/gameStore";
 import { VideoGrid } from "./VideoGrid";
 import { Card } from "./Card";
 import { HUD } from "./HUD";
+import { MatePicker } from "./MatePicker";
+import { TurnGameOverlay } from "./TurnGameOverlay";
+import { GotchaModal } from "./GotchaModal";
+import { SmokoModal } from "./SmokoModal";
 
 import { motion, AnimatePresence } from "framer-motion";
 import { List, ShieldAlert, Maximize, Power } from "lucide-react";
@@ -82,17 +86,16 @@ export const Game: React.FC = () => {
   return (
     <div className="flex flex-col h-screen bg-black text-white overflow-hidden">
 
-      {/* VIDEO */}
+      {/* VIDEO STRIP */}
       <div className="h-1/4 min-h-[120px] bg-neutral-900 p-2 overflow-y-auto">
         <VideoGrid />
       </div>
 
-      {/* TABLE */}
+      {/* TABLE AREA */}
       <div className="flex-1 relative flex flex-col items-center justify-center p-4">
 
-        {/* TURN */}
+        {/* TURN INDICATOR */}
         <div className="absolute top-3 left-0 right-0 text-center z-10">
-
           <span
             className={cn(
               "px-4 py-1 rounded-full text-xs font-bold",
@@ -105,15 +108,13 @@ export const Game: React.FC = () => {
               ? "YOUR TURN"
               : `${currentPlayer?.name}'s Turn`}
           </span>
-
         </div>
 
-        {/* CARDS */}
+        {/* CARD TABLE */}
         <div className="relative flex items-center justify-center gap-6">
 
           {/* DECK */}
           <div className="relative">
-
             {deck.length > 0 ? (
               <Card
                 card={deck[0]}
@@ -124,7 +125,7 @@ export const Game: React.FC = () => {
                     : undefined
                 }
                 className={cn(
-                  "cursor-pointer",
+                  "cursor-pointer transition-transform",
                   isMyTurn && "hover:scale-105"
                 )}
               />
@@ -137,12 +138,10 @@ export const Game: React.FC = () => {
             <div className="absolute -bottom-6 inset-x-0 text-center text-xs text-neutral-500">
               {deck.length} cards
             </div>
-
           </div>
 
-          {/* ACTIVE */}
+          {/* ACTIVE CARD */}
           <AnimatePresence mode="wait">
-
             {activeCard && (
               <motion.div
                 key={activeCard.id}
@@ -153,25 +152,22 @@ export const Game: React.FC = () => {
                 <Card card={activeCard} />
               </motion.div>
             )}
-
           </AnimatePresence>
 
         </div>
 
       </div>
 
-      {/* RULES PREVIEW */}
+      {/* RULE PREVIEW STRIP */}
       {rules.length > 0 && (
-        <div className="px-3 py-2 bg-neutral-900 border-t border-neutral-800 text-xs">
-
+        <div className="px-3 py-2 bg-neutral-900 border-t border-neutral-800 text-xs max-h-20 overflow-y-auto">
           {rules.map(r => (
-            <div key={r.id}>• {r.title}</div>
+            <div key={r.id}>• {r.text}</div>
           ))}
-
         </div>
       )}
 
-      {/* HUD */}
+      {/* PLAYER HUD */}
       <HUD />
 
       {/* BOTTOM BAR */}
@@ -205,9 +201,11 @@ export const Game: React.FC = () => {
 
       </div>
 
-      {/* RULES MODAL */}
+      {/* MODALS & OVERLAYS */}
+
       <AnimatePresence>
 
+        {/* RULES MODAL */}
         {showRules && (
           <motion.div
             initial={{ y: "100%" }}
@@ -215,7 +213,6 @@ export const Game: React.FC = () => {
             exit={{ y: "100%" }}
             className="fixed inset-x-0 bottom-0 top-1/4 bg-neutral-900 z-40 rounded-t-2xl p-5 overflow-y-auto"
           >
-
             <div className="flex justify-between mb-4">
               <h2 className="font-bold text-lg">
                 Active Rules
@@ -243,7 +240,6 @@ export const Game: React.FC = () => {
                 {r.text}
               </div>
             ))}
-
           </motion.div>
         )}
 
@@ -255,7 +251,6 @@ export const Game: React.FC = () => {
             exit={{ y: "100%" }}
             className="fixed inset-x-0 bottom-0 bg-neutral-950 z-50 rounded-t-2xl p-5 border-t border-neutral-800"
           >
-
             <div className="flex justify-between mb-4">
               <h2 className="font-bold text-red-400">
                 Host Tools
@@ -281,6 +276,12 @@ export const Game: React.FC = () => {
         )}
 
       </AnimatePresence>
+
+      {/* CORE GAME OVERLAYS (always mounted) */}
+      <MatePicker />
+      <TurnGameOverlay />
+      <GotchaModal />
+      <SmokoModal />
 
     </div>
   );
